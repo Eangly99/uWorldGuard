@@ -252,8 +252,35 @@ public class DefaultDomain implements Domain, ChangeTracked {
         return join(getPlayers(), "");
     }
 
+    /**
+     * As {@link #toPlayersString()}, but a player missing from the server's cache is printed from
+     * {@code cache} when it has them, and as their UUID otherwise.
+     */
+    public String toPlayersString(final com.sk89q.worldguard.util.profile.cache.ProfileCache cache) {
+        final Set<String> names = new LinkedHashSet<>(backing.size());
+        for (final UUID uniqueId : backing.getPlayers()) {
+            String name = com.tricrotism.uworldguard.wgcompat.NameResolver.name(uniqueId);
+            if (name == null && cache != null) {
+                final com.sk89q.worldguard.util.profile.Profile profile = cache.getIfPresent(uniqueId);
+                name = profile == null ? null : profile.getName();
+            }
+            names.add(name == null ? "uuid:" + uniqueId : name);
+        }
+        return join(names, "");
+    }
+
     public String toUserFriendlyString() {
-        final String players = toPlayersString();
+        return friendly(toPlayersString());
+    }
+
+    /**
+     * @see #toPlayersString(com.sk89q.worldguard.util.profile.cache.ProfileCache)
+     */
+    public String toUserFriendlyString(final com.sk89q.worldguard.util.profile.cache.ProfileCache cache) {
+        return friendly(toPlayersString(cache));
+    }
+
+    private String friendly(final String players) {
         final String groups = toGroupsString();
         if (players.isEmpty()) {
             return groups;

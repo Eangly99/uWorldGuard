@@ -54,6 +54,11 @@ public final class SelectionService implements SelectionProvider {
     }
 
     @Override
+    public @Nullable List<BlockVector3> getConvex(final Player player) {
+        return delegate.getConvex(player);
+    }
+
+    @Override
     public void setSelection(final Player player, final Selection selection) {
         delegate.setSelection(player, selection);
     }

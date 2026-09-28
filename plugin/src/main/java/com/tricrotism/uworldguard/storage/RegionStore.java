@@ -1,7 +1,9 @@
 package com.tricrotism.uworldguard.storage;
 
 import com.tricrotism.uworldguard.region.RegionManager;
+import com.tricrotism.uworldguard.region.SpatialIndex;
 import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Persistence backend for regions, one logical store per world. Implementations must be
@@ -21,6 +23,19 @@ public interface RegionStore {
      * Persist all regions currently in {@code manager}.
      */
     void save(String worldName, RegionManager manager) throws Exception;
+
+    /**
+     * The index that should answer {@code manager}'s point lookups, or {@code null} to keep its own
+     * chunk cache. Asked once per world load, after {@link #load} has filled the manager.
+     */
+    default @Nullable SpatialIndex index(final String worldName, final RegionManager manager) {
+        return null;
+    }
+
+    /**
+     * The world's manager is gone. Drop anything {@link #index} kept for it.
+     */
+    default void unload(final String worldName) {}
 
     /**
      * Release anything the backend registered outside this plugin, after the final save. A file-backed

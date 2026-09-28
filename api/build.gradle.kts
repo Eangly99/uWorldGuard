@@ -8,13 +8,32 @@ repositories {
     mavenCentral()
 }
 
+// Region lookup benchmarks. Never part of the build: run them with `gradlew :api:jmh`, and pass
+// `-Pjmh.args="<regex> <jmh options>"` to narrow or tune a run.
+val jmh: SourceSet = sourceSets.create("jmh") {
+    compileClasspath += sourceSets.main.get().output + sourceSets.main.get().compileClasspath
+    runtimeClasspath += sourceSets.main.get().output + sourceSets.main.get().compileClasspath
+}
+
 dependencies {
     // Paper API only (no NMS) — provides org.bukkit.* and the jspecify annotations.
     paperweight.paperDevBundle(libs.versions.paper.api.get())
+
+    "jmhImplementation"(libs.jmh.core)
+    "jmhAnnotationProcessor"(libs.jmh.generator)
 }
 
 java {
     toolchain.languageVersion = JavaLanguageVersion.of(25)
+}
+
+tasks.register<JavaExec>("jmh") {
+    group = "verification"
+    description = "Runs the region lookup benchmarks."
+    classpath = jmh.runtimeClasspath
+    mainClass = "org.openjdk.jmh.Main"
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(25) }
+    args(providers.gradleProperty("jmh.args").getOrElse("RegionLookupBenchmark").split(" "))
 }
 
 mavenPublishing {

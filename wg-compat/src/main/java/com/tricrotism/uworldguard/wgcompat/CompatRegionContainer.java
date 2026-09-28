@@ -5,16 +5,19 @@
 
 package com.tricrotism.uworldguard.wgcompat;
 
+import com.sk89q.worldguard.bukkit.BukkitRegionContainer;
 import com.sk89q.worldguard.protection.regions.RegionContainer;
 
 /**
- * The concrete {@link RegionContainer} the shim hands to consumers. All behaviour lives in the base
- * class; WorldGuard declares it abstract, so a subclass has to exist somewhere.
+ * The concrete {@link RegionContainer} the shim hands to consumers. All behaviour lives in
+ * {@link RegionContainer}; extending {@link BukkitRegionContainer} lets a consumer cast to the type
+ * WorldGuard returns on Bukkit.
  */
-public final class CompatRegionContainer extends RegionContainer {
+public final class CompatRegionContainer extends BukkitRegionContainer {
 
     public static final CompatRegionContainer INSTANCE = new CompatRegionContainer();
 
     private CompatRegionContainer() {
+        super(null);
     }
 }

@@ -5,6 +5,7 @@
 
 package com.tricrotism.uworldguard.wgcompat;
 
+import com.sk89q.worldguard.bukkit.BukkitPlayer;
 import org.bukkit.Bukkit;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.command.CommandSender;
@@ -21,7 +22,7 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Builds {@code com.sk89q.worldguard.LocalPlayer} instances.
  *
- * <p>An online player becomes a {@link LocalBukkitPlayer}, which extends WorldEdit's own
+ * <p>An online player becomes a {@link BukkitPlayer}, which extends WorldEdit's own
  * {@code BukkitPlayer}. Consumers cast to that class to get back to Bukkit, so the inheritance is
  * part of the contract. An offline player has no WorldEdit player to extend, so it stays a
  * {@link Proxy} that answers identity and permission questions and refuses the rest.
@@ -49,7 +50,7 @@ public final class PlayerWrapping {
      * whose drain submits to the common pool and unparks a worker, which costs more than everything
      * the wrapper does.
      */
-    private static final Map<UUID, LocalBukkitPlayer> CACHE = new ConcurrentHashMap<>();
+    private static final Map<UUID, BukkitPlayer> CACHE = new ConcurrentHashMap<>();
 
     private PlayerWrapping() {
     }
@@ -61,12 +62,12 @@ public final class PlayerWrapping {
      */
     public static Object wrap(final Player player) {
         final UUID uniqueId = player.getUniqueId();
-        final LocalBukkitPlayer cached = CACHE.get(uniqueId);
-        if (cached != null && cached.bukkit() == player) {
+        final BukkitPlayer cached = CACHE.get(uniqueId);
+        if (cached != null && cached.uwgBukkit() == player) {
             return cached;
         }
         CompatDiagnostics.WRAPS.increment();
-        final LocalBukkitPlayer wrapped = new LocalBukkitPlayer(player);
+        final BukkitPlayer wrapped = new BukkitPlayer(null, player);
         CACHE.put(uniqueId, wrapped);
         return wrapped;
     }
@@ -120,6 +121,20 @@ public final class PlayerWrapping {
             return Bukkit.getConsoleSender();
         }
         return null;
+    }
+
+    /**
+     * Backs {@code WorldGuardPlugin.checkPermission}, which cannot construct the WorldEdit exception
+     * itself without the verifier resolving a WorldEdit type when that class loads.
+     *
+     * @throws com.sk89q.minecraft.util.commands.CommandPermissionsException when {@code sender} lacks
+     *                                                                       {@code permission}
+     */
+    public static void checkPermission(final CommandSender sender, final String permission)
+        throws com.sk89q.minecraft.util.commands.CommandPermissionsException {
+        if (!sender.hasPermission(permission)) {
+            throw new com.sk89q.minecraft.util.commands.CommandPermissionsException();
+        }
     }
 
     private static Object createOffline(final OfflinePlayer offline) {

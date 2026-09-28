@@ -14,7 +14,7 @@ public class FeedFlag extends Handler {
 
     public static final Factory FACTORY = new Factory();
 
-    protected FeedFlag(final Session session) {
+    public FeedFlag(final Session session) {
         super(session);
     }
 

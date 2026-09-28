@@ -14,7 +14,7 @@ public class WeatherLockFlag extends Handler {
 
     public static final Factory FACTORY = new Factory();
 
-    protected WeatherLockFlag(final Session session) {
+    public WeatherLockFlag(final Session session) {
         super(session);
     }
 

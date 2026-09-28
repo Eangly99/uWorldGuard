@@ -29,9 +29,13 @@ public final class ApplicableRegionSet {
      * Snapshot of whether this world uses group qualifiers, so resolution reads a field not a map.
      */
     private final boolean groupsInUse;
+    /**
+     * The storage backend's resolution for this block, used for every flag it accepts.
+     */
+    private final SpatialIndex.@Nullable FlagResolver resolver;
 
     public ApplicableRegionSet(final List<ProtectedRegion> applicable, final @Nullable ProtectedRegion global) {
-        this(new ArrayList<>(applicable), global, null);
+        this(new ArrayList<>(applicable), global, null, null);
     }
 
     /**
@@ -42,7 +46,7 @@ public final class ApplicableRegionSet {
      */
     ApplicableRegionSet(
         final List<ProtectedRegion> applicable, final @Nullable ProtectedRegion global,
-        final @Nullable RegionManager owner
+        final @Nullable RegionManager owner, final SpatialIndex.@Nullable FlagResolver resolver
     ) {
         if (applicable.size() > 1) {
             applicable.sort(PRIORITY_DESC);
@@ -51,6 +55,7 @@ public final class ApplicableRegionSet {
         this.global = global;
         this.owner = owner;
         this.groupsInUse = owner == null || owner.anyFlagGroups();
+        this.resolver = resolver;
     }
 
     /**
@@ -335,6 +340,17 @@ public final class ApplicableRegionSet {
         if (!worldUsesOrUnknown(flag)) {
             return null;
         }
+        final SpatialIndex.FlagResolver r = resolver;
+        if (r != null && r.resolves(flag)) {
+            final ProtectedRegion top = r.highestSetting(flag);
+            if (top == null) {
+                return global != null ? global.getFlag(flag) : null;
+            }
+            final T v = top.getFlag(flag);
+            if (v != null) {
+                return v;
+            }
+        }
         for (int i = 0, n = applicable.size(); i < n; i++) {
             final T v = applicable.get(i).getFlag(flag);
             if (v != null) {
@@ -361,6 +377,10 @@ public final class ApplicableRegionSet {
     private @Nullable State resolveState(final StateFlag flag, final @Nullable UUID subject) {
         if (!worldUsesOrUnknown(flag)) {
             return null;
+        }
+        final SpatialIndex.FlagResolver r = resolver;
+        if (r != null && r.resolves(flag)) {
+            return r.resolveState(flag, subject, groupsInUse);
         }
         boolean found = false;
         int bestPriority = 0;

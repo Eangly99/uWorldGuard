@@ -113,6 +113,7 @@ public final class RegionContainerImpl implements RegionContainer {
                 manager.addRegion(new GlobalProtectedRegion());
             }
             manager.clearDirty();
+            manager.uwgUseIndex(store.index(name, manager));
             loaded.put(world.getUID(), new Loaded(name, manager));
             republishManagers();
             warnAboutUnenforcedGroups(name, manager);
@@ -153,6 +154,7 @@ public final class RegionContainerImpl implements RegionContainer {
             if (!loading.remove(uid)) {
                 return;
             }
+            manager.uwgUseIndex(store.index(name, manager));
             loaded.put(uid, new Loaded(name, manager));
             republishManagers();
             FlagLifecycle.resolvePending(manager);
@@ -196,6 +198,7 @@ public final class RegionContainerImpl implements RegionContainer {
         final Loaded removed = loaded.remove(world.getUID());
         republishManagers();
         if (removed != null) {
+            store.unload(removed.name());
             Bukkit.getPluginManager().callEvent(new RegionsUnloadedEvent(world, removed.manager()));
             saveAsync(removed.name(), removed.manager(), () -> {});
         }

@@ -14,7 +14,7 @@ public class EntryFlag extends Handler {
 
     public static final Factory FACTORY = new Factory();
 
-    protected EntryFlag(final Session session) {
+    public EntryFlag(final Session session) {
         super(session);
     }
 

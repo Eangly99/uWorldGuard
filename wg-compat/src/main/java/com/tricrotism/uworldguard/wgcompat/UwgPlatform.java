@@ -16,7 +16,7 @@ import java.nio.file.Path;
  * <p>Instantiated lazily by {@code com.sk89q.worldguard.WorldGuard#getPlatform()}, so a server
  * without WorldEdit never loads it.
  */
-public final class UwgPlatform implements com.sk89q.worldguard.internal.platform.WorldGuardPlatform {
+public final class UwgPlatform extends com.sk89q.worldguard.bukkit.BukkitWorldGuardPlatform {
 
     public static final UwgPlatform INSTANCE = new UwgPlatform();
 
@@ -44,7 +44,7 @@ public final class UwgPlatform implements com.sk89q.worldguard.internal.platform
     }
 
     @Override
-    public com.sk89q.worldguard.config.ConfigurationManager getGlobalStateManager() {
+    public com.sk89q.worldguard.bukkit.BukkitConfigurationManager getGlobalStateManager() {
         return CompatConfigurationManager.INSTANCE;
     }
 
@@ -63,9 +63,19 @@ public final class UwgPlatform implements com.sk89q.worldguard.internal.platform
         Bukkit.broadcast(Component.text(message), "uworldguard.notify");
     }
 
+    /**
+     * Fires {@code FlagContextCreateEvent} on the calling thread, only when something listens for
+     * it, so an unobserved flag parse costs one array length read.
+     */
     @Override
     public void notifyFlagContextCreate(
         final com.sk89q.worldguard.protection.flags.FlagContext.FlagContextBuilder flagContextBuilder) {
+        if (com.sk89q.worldguard.bukkit.protection.events.flags.FlagContextCreateEvent.getHandlerList()
+            .getRegisteredListeners().length == 0) {
+            return;
+        }
+        Bukkit.getPluginManager().callEvent(
+            new com.sk89q.worldguard.bukkit.protection.events.flags.FlagContextCreateEvent(flagContextBuilder));
     }
 
     @Override

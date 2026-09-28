@@ -20,13 +20,24 @@ import java.nio.file.Path;
  *
  * <p>uWorldGuard's implementation is {@code com.tricrotism.uworldguard.wgcompat.UwgPlatform}.
  *
- * <p>Four members of WorldGuard's interface are not shipped, because they reference types this layer
- * does not provide: {@code getMatcher()}, {@code getDebugHandler()}, {@code addPlatformReports(...)}
- * and {@code createProfileService(...)}. The {@code broadcastNotification} overload taking
- * WorldEdit's shaded {@code TextComponent} is omitted for the same reason — that class ships in
- * {@code worldedit-libs}, not in the WorldEdit API this module compiles against.
+ * <p>Two members of WorldGuard's interface are not shipped, because they reference types this layer
+ * does not provide: {@code getDebugHandler()} and {@code addPlatformReports(...)}. The
+ * {@code broadcastNotification} overload taking WorldEdit's shaded {@code TextComponent} is omitted
+ * for the same reason: that class ships in {@code worldedit-libs}, not in the WorldEdit API this
+ * module compiles against.
  */
 public interface WorldGuardPlatform {
+
+    StringMatcher getMatcher();
+
+    /**
+     * The shared service {@link com.sk89q.worldguard.WorldGuard#getProfileService()} returns.
+     * {@code profileCache} is not used: that service already fronts its own cache.
+     */
+    default com.sk89q.worldguard.util.profile.resolver.ProfileService createProfileService(
+        final com.sk89q.worldguard.util.profile.cache.ProfileCache profileCache) {
+        return com.sk89q.worldguard.WorldGuard.getInstance().getProfileService();
+    }
 
     String getPlatformName();
 

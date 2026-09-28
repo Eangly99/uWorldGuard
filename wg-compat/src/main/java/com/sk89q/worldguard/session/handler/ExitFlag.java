@@ -14,7 +14,7 @@ public class ExitFlag extends Handler {
 
     public static final Factory FACTORY = new Factory();
 
-    protected ExitFlag(final Session session) {
+    public ExitFlag(final Session session) {
         super(session);
     }
 

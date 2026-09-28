@@ -275,7 +275,7 @@ public final class NaturalListener implements Listener {
             || !query.usesFlag(event.getBlock().getWorld(), Flags.OTHER_EXPLOSION)) {
             return;
         }
-        event.blockList().removeIf(block -> !query.testState(block, Flags.OTHER_EXPLOSION));
+        query.removeDenied(event.getBlock().getWorld(), event.blockList(), Flags.OTHER_EXPLOSION);
     }
 
     /**

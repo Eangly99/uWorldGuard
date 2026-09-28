@@ -181,7 +181,11 @@ public final class FlagQueryAlgorithms {
         return association == null ? Association.NON_MEMBER : association;
     }
 
-    private static boolean appliesTo(
+    /**
+     * Whether {@code region}'s value for {@code flag} applies to a subject with {@code association},
+     * going by the region's group qualifier for that flag.
+     */
+    public static boolean appliesTo(
         final ProtectedRegion region, final Flag<?> flag, final Association association
     ) {
         final RegionGroupFlag groupFlag = flag.getRegionGroupFlag();

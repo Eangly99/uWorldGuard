@@ -19,7 +19,17 @@ repositories {
         }
         content { includeGroup("xyz.xenondevs.invui") }
     }
+    // UniverseSpigot API, which is not published anywhere public. Build it into the local repository
+    // `gradlew applyAllPatches :universespigot-api:publishToMavenLocal`.
+    mavenLocal {
+        content { includeGroup("com.universeprojects") }
+    }
 }
+
+// The UniverseSpigot backend compiles against that server's API, which is a whole paper-api fork on
+// another Minecraft version, so it gets its own source set rather than sharing main's classpath. Main
+// reaches it by reflection only after detecting UniverseSpigot, so no uSpigot type loads elsewhere.
+val universe: SourceSet = sourceSets.create("universe")
 
 dependencies {
     paperweight.paperDevBundle(libs.versions.paper.api.get())
@@ -50,6 +60,12 @@ dependencies {
     // are provided by the server (and conflict with Paper's strict versions otherwise).
     compileOnly(libs.worldedit.bukkit) { isTransitive = false }
     compileOnly(libs.worldedit.core) { isTransitive = false }
+    // The WorldGuard shim's regions carry WorldEdit vectors, so its tests need the core classes.
+    testImplementation(libs.worldedit.core) { isTransitive = false }
+
+    "universeCompileOnly"(libs.universespigot.api)
+    "universeCompileOnly"(project(":api"))
+    "universeCompileOnly"(sourceSets.main.get().output)
 
     // MockBukkit runs the tests against a mock server, so listeners and services are exercised
     // without a Paper process. Its artifact id is pinned to the API version we compile against.
@@ -83,6 +99,7 @@ tasks {
         dependsOn(":api:jar", ":wg-compat:jar")
         from(project(":api").sourceSets["main"].output)
         from(project(":wg-compat").sourceSets["main"].output)
+        from(universe.output)
     }
 
     shadowJar {
@@ -91,6 +108,7 @@ tasks {
         dependsOn(":api:jar", ":wg-compat:jar")
         from(project(":api").sourceSets["main"].output)
         from(project(":wg-compat").sourceSets["main"].output)
+        from(universe.output)
         // LGPL-3.0 obliges us to ship the license texts alongside the compat layer's classes.
         from(project(":wg-compat").file("COPYING")) { into("META-INF/licenses/wg-compat") }
         from(project(":wg-compat").file("COPYING.LESSER")) { into("META-INF/licenses/wg-compat") }

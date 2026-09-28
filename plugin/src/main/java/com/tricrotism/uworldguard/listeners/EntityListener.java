@@ -88,7 +88,7 @@ public final class EntityListener implements Listener {
             return;
         }
 
-        event.blockList().removeIf(block -> !query.testState(block, flag));
+        query.removeDenied(event.getEntity().getWorld(), event.blockList(), flag);
     }
 
     /**
@@ -194,10 +194,10 @@ public final class EntityListener implements Listener {
             return;
         }
 
-        if (victim instanceof ItemFrame || victim instanceof ArmorStand) {
-            final StateFlag flag = victim instanceof ItemFrame
-                ? Flags.ENTITY_ITEM_FRAME_DESTROY
-                : Flags.ENTITY_ARMOR_STAND_DESTROY;
+        final StateFlag flag = victim instanceof ItemFrame
+            ? Flags.ENTITY_ITEM_FRAME_DESTROY
+            : victim instanceof ArmorStand ? Flags.ENTITY_ARMOR_STAND_DESTROY : null;
+        if (flag != null) {
             final Player attacker = resolveAttacker(damager);
             final ApplicableRegionSet at = query.getApplicableRegions(victim);
             final boolean allowed = attacker != null

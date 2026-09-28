@@ -5,5 +5,8 @@ public enum RegionType {
     POLYGON,
     CYLINDER,
     SPHERE,
-    GLOBAL
+    GLOBAL,
+    POLYHEDRON,
+    COMPOSITE,
+    CARVED
 }

@@ -353,6 +353,12 @@ storage:
         url: "jdbc:sqlite:plugins/uWorldGuard/regions.db"
 ```
 
+On UniverseSpigot, uWorldGuard detects the server and keeps regions in its built-in region service:
+that service's files store them and its index answers lookups. Each world migrates automatically from the storage
+configured above the first time it loads there, and `universe-migrated.txt` lists the worlds that have moved. The
+configured storage keeps a full copy afterwards, since every save writes both, so moving back to Paper loses nothing. If
+the server's region service isn't available, uWorldGuard uses the configured storage as normal.
+
 **Movement detection.** This is the setting to reach for if your server is struggling.
 `PlayerMoveEvent` fires many times per second per player, and it's the most expensive thing any
 region plugin does.
@@ -785,8 +791,15 @@ hashing. A flag re-registered after its plugin reloads gets its old index back.
 ### Region types
 
 `ProtectedCuboidRegion`, `ProtectedCylinderRegion`, `ProtectedSphereRegion`,
-`ProtectedPolygonRegion`, and `GlobalProtectedRegion` (a whole world, priority-wise below
-everything). All extend `ProtectedRegion`. Get a world's `RegionManager` from
+`ProtectedPolygonRegion`, and `GlobalProtectedRegion` (a whole world, priority-wise below everything). Three more match
+the shapes UniverseSpigot has:
+
+- `ProtectedPolyhedronRegion`: the convex hull of a set of points, up to 1,000,000 blocks on each axis.
+- `ProtectedCompositeRegion`: named parts under one id. A block is inside if any part holds it.
+- `ProtectedCarvedRegion`: a solid with named holes cut out. A block in a hole is not in the region.
+
+Parts and holes are ordinary regions used for their shape only, and can nest. All of these extend
+`ProtectedRegion`. Get a world's `RegionManager` from
 `RegionContainer.get(world)` — it returns `null` if that world's regions aren't loaded, so check.
 
 ### Threading

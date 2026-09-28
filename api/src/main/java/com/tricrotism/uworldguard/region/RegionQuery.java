@@ -1,6 +1,7 @@
 package com.tricrotism.uworldguard.region;
 
 import com.tricrotism.uworldguard.flags.Flag;
+import com.tricrotism.uworldguard.flags.State;
 import com.tricrotism.uworldguard.flags.StateFlag;
 import org.bukkit.Location;
 import org.bukkit.World;
@@ -106,6 +107,40 @@ public final class RegionQuery {
      */
     public boolean testState(final Location location, final StateFlag flag, final @Nullable Player player) {
         return getApplicableRegions(location).testState(flag, player == null ? null : player.getUniqueId());
+    }
+
+    /**
+     * Drops every block where {@link #testState(Block, StateFlag)} is false. When the storage backend
+     * proves {@code flag} reads the same over the blocks' bounding box, that one answer covers them all
+     * instead of a lookup per block.
+     */
+    public void removeDenied(final World world, final List<Block> blocks, final StateFlag flag) {
+        if (blocks.isEmpty()) {
+            return;
+        }
+        final RegionManager manager = container.get(world);
+        if (manager != null && manager.resolvesBoxes()) {
+            int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
+            int maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE, maxZ = Integer.MIN_VALUE;
+            for (int i = 0, n = blocks.size(); i < n; i++) {
+                final Block b = blocks.get(i);
+                minX = Math.min(minX, b.getX());
+                minY = Math.min(minY, b.getY());
+                minZ = Math.min(minZ, b.getZ());
+                maxX = Math.max(maxX, b.getX());
+                maxY = Math.max(maxY, b.getY());
+                maxZ = Math.max(maxZ, b.getZ());
+            }
+            final State across = manager.stateAcross(minX, minY, minZ, maxX, maxY, maxZ, flag);
+            if (across == State.ALLOW) {
+                return;
+            }
+            if (across == State.DENY) {
+                blocks.clear();
+                return;
+            }
+        }
+        blocks.removeIf(block -> !testState(block, flag));
     }
 
     public <T> @Nullable T queryValue(final Location location, final Flag<T> flag) {

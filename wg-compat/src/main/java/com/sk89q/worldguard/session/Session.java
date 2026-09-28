@@ -13,11 +13,11 @@ import com.sk89q.worldguard.protection.regions.ProtectedRegion;
 import com.sk89q.worldguard.protection.regions.RegionQuery;
 import com.sk89q.worldguard.session.handler.Handler;
 
+import java.util.HashMap;
 import java.util.HashSet;
-import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -36,8 +36,20 @@ public class Session {
      */
     private static final Set<Class<?>> REPORTED = ConcurrentHashMap.newKeySet();
 
+    private static final Handler[] NO_HANDLERS = new Handler[0];
+
     private final SessionManager manager;
-    private final List<Handler> handlers = new CopyOnWriteArrayList<>();
+    /**
+     * WorldGuard's own field name and type, keyed by handler class. Plugins such as PvPManager read it
+     * by reflection, cast it to {@code HashMap} and remove their stale handler from it before
+     * registering a new one, so any other shape fails their hook outright.
+     */
+    private final HashMap<Class<?>, Handler> handlers = new LinkedHashMap<>();
+    /**
+     * What dispatch iterates, rebuilt on every {@link #register}. Reflective edits to
+     * {@link #handlers} show up here at the next register, which is when those plugins make them.
+     */
+    private volatile Handler[] dispatch = NO_HANDLERS;
 
     private volatile boolean bypassDisabled;
 
@@ -50,13 +62,15 @@ public class Session {
     }
 
     public void register(final Handler handler) {
-        handlers.add(handler);
+        synchronized (handlers) {
+            handlers.put(handler.getClass(), handler);
+            dispatch = handlers.values().toArray(NO_HANDLERS);
+        }
     }
 
     @SuppressWarnings("unchecked")
     public <T extends Handler> T getHandler(final Class<T> type) {
-        for (int i = 0, n = handlers.size(); i < n; i++) {
-            final Handler handler = handlers.get(i);
+        for (final Handler handler : dispatch) {
             if (type.isInstance(handler)) {
                 return (T) handler;
             }
@@ -75,8 +89,7 @@ public class Session {
     public void initialize(final LocalPlayer player) {
         final Location location = player.getLocation();
         final ApplicableRegionSet set = regionsAt(location);
-        for (int i = 0, n = handlers.size(); i < n; i++) {
-            final Handler handler = handlers.get(i);
+        for (final Handler handler : dispatch) {
             try {
                 handler.initialize(player, location, set);
             } catch (final RuntimeException | LinkageError e) {
@@ -88,8 +101,7 @@ public class Session {
     public void uninitialize(final LocalPlayer player) {
         final Location location = player.getLocation();
         final ApplicableRegionSet set = regionsAt(location);
-        for (int i = 0, n = handlers.size(); i < n; i++) {
-            final Handler handler = handlers.get(i);
+        for (final Handler handler : dispatch) {
             try {
                 handler.uninitialize(player, location, set);
             } catch (final RuntimeException | LinkageError e) {
@@ -105,8 +117,7 @@ public class Session {
 
     public void tick(final LocalPlayer player) {
         final ApplicableRegionSet set = regionsAt(player.getLocation());
-        for (int i = 0, n = handlers.size(); i < n; i++) {
-            final Handler handler = handlers.get(i);
+        for (final Handler handler : dispatch) {
             try {
                 handler.tick(player, set);
             } catch (final RuntimeException | LinkageError e) {
@@ -117,8 +128,7 @@ public class Session {
     }
 
     public boolean isInvincible(final LocalPlayer player) {
-        for (int i = 0, n = handlers.size(); i < n; i++) {
-            final Handler handler = handlers.get(i);
+        for (final Handler handler : dispatch) {
             final StateFlag.State state;
             try {
                 state = handler.getInvincibility(player);
@@ -163,13 +173,13 @@ public class Session {
     public Location uwgTestMoveTo(
         final LocalPlayer player, final Location from, final Location to, final MoveType moveType
     ) {
-        if (handlers.isEmpty()) {
+        final Handler[] current = dispatch;
+        if (current.length == 0) {
             return null;
         }
         final boolean cancellable = moveType.isCancellable();
         final ApplicableRegionSet toSet = regionsAt(to);
-        for (int i = 0, n = handlers.size(); i < n; i++) {
-            final Handler handler = handlers.get(i);
+        for (final Handler handler : current) {
             final boolean allowed;
             try {
                 allowed = handler.testMoveTo(player, from, to, toSet, moveType);
@@ -192,8 +202,7 @@ public class Session {
         if (!fromRegions.equals(toRegions)) {
             final Set<ProtectedRegion> entered = difference(toRegions, fromRegions);
             final Set<ProtectedRegion> exited = difference(fromRegions, toRegions);
-            for (int i = 0, n = handlers.size(); i < n; i++) {
-                final Handler handler = handlers.get(i);
+            for (final Handler handler : current) {
                 final boolean allowed;
                 try {
                     allowed = handler.onCrossBoundary(player, from, to, toSet, entered, exited, moveType);

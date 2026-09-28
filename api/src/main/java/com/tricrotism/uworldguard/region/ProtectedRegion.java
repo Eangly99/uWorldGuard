@@ -141,6 +141,7 @@ public abstract class ProtectedRegion {
 
     public final void setPriority(final int priority) {
         this.priority = priority;
+        edited(false);
     }
 
     public final @Nullable ProtectedRegion getParent() {
@@ -165,6 +166,11 @@ public abstract class ProtectedRegion {
      * @throws IllegalArgumentException if it would create a circular relationship
      */
     public final void setParent(final @Nullable ProtectedRegion parent) {
+        assignParent(parent);
+        edited(false);
+    }
+
+    private void assignParent(final @Nullable ProtectedRegion parent) {
         synchronized (PARENT_LOCK) {
             if (parent != null) {
                 for (@Nullable ProtectedRegion p = parent; p != null; p = p.parent) {
@@ -276,7 +282,7 @@ public abstract class ProtectedRegion {
         } else {
             flags.put(flag, value);
         }
-        edited();
+        edited(true);
     }
 
     /**
@@ -287,13 +293,14 @@ public abstract class ProtectedRegion {
     }
 
     /**
-     * Tells the owning world its flag index and stored document are both out of date. A region not
-     * yet added to a manager has nobody to tell, and needs nobody: adding it retires the index.
+     * Tells the owning world its stored document is out of date, and its flag index too when
+     * {@code flagsChanged}. A region not yet added to a manager has nobody to tell, and needs nobody:
+     * adding it retires the index.
      */
-    private void edited() {
+    private void edited(final boolean flagsChanged) {
         final RegionManager manager = owner;
         if (manager != null) {
-            manager.markDirty();
+            manager.regionEdited(this, flagsChanged);
         }
     }
 
@@ -333,7 +340,7 @@ public abstract class ProtectedRegion {
         } else {
             flagGroups.put(flag, group);
         }
-        edited();
+        edited(true);
     }
 
     /**
@@ -400,7 +407,9 @@ public abstract class ProtectedRegion {
         copyDomain(other.owners, owners);
         copyDomain(other.members, members);
         priority = other.priority;
-        setParent(other.parent);
+        // Quiet on purpose: this runs inside the manager's compute, and notifying an index from there
+        // could re-enter the same map entry. The manager tells the index once the swap is done.
+        assignParent(other.parent);
     }
 
     private static void copyDomain(final DefaultDomain from, final DefaultDomain to) {

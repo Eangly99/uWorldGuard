@@ -15,9 +15,10 @@ import java.util.List;
  * A 2D footprint extruded between two Y values, backed by a uWorldGuard
  * {@code com.tricrotism.uworldguard.region.ProtectedPolygonRegion}.
  *
- * <p>This class also fronts uWorldGuard's cylinder and sphere regions, which WorldGuard's API has no
- * constant for. Those report {@link RegionType#POLYGON} and answer {@link #getPoints()} with their
- * four bounding-box corners, since their true outline is not a vertex list.
+ * <p>This class also fronts uWorldGuard's cylinder, sphere, polyhedron, composite and carved regions,
+ * which WorldGuard's API has no constant for. Those report {@link RegionType#POLYGON} and answer
+ * {@link #getPoints()} with their four bounding-box corners, since their true outline is not a 2D
+ * vertex list. Containment still uses the exact shape.
  */
 public class ProtectedPolygonalRegion extends ProtectedRegion {
 

@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Test;
 import org.mockbukkit.mockbukkit.MockBukkit;
 import org.mockbukkit.mockbukkit.ServerMock;
 import org.mockbukkit.mockbukkit.entity.ArmorStandMock;
+import org.mockbukkit.mockbukkit.entity.ArrowMock;
 import org.mockbukkit.mockbukkit.entity.CreeperMock;
 import org.mockbukkit.mockbukkit.entity.PlayerMock;
 import org.mockbukkit.mockbukkit.plugin.PluginMock;
@@ -114,6 +115,25 @@ class ArmorStandProtectionTest {
         claim("plot").setFlag(Flags.ENTITY_ARMOR_STAND_DESTROY, State.DENY);
 
         assertFalse(hit(creeper(), 16, 16));
+    }
+
+    @Test
+    void aStrangersArrowCannotBreakAStandInAClaim() {
+        claim("plot");
+        final ArrowMock arrow = new ArrowMock(server, UUID.randomUUID());
+        arrow.setShooter(server.addPlayer());
+
+        assertFalse(hit(arrow, 16, 16));
+    }
+
+    /**
+     * An arrow with no player behind it, as a dispenser fires, is judged by the flag alone.
+     */
+    @Test
+    void aDeniedFlagStopsAnArrowWithNoPlayerBehindIt() {
+        claim("plot").setFlag(Flags.ENTITY_ARMOR_STAND_DESTROY, State.DENY);
+
+        assertFalse(hit(new ArrowMock(server, UUID.randomUUID()), 16, 16));
     }
 
     @Test

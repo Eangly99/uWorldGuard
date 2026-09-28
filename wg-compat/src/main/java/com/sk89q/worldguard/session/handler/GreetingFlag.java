@@ -14,7 +14,7 @@ public class GreetingFlag extends Handler {
 
     public static final Factory FACTORY = new Factory();
 
-    protected GreetingFlag(final Session session) {
+    public GreetingFlag(final Session session) {
         super(session);
     }
 

@@ -14,7 +14,7 @@ public class InvincibilityFlag extends Handler {
 
     public static final Factory FACTORY = new Factory();
 
-    protected InvincibilityFlag(final Session session) {
+    public InvincibilityFlag(final Session session) {
         super(session);
     }
 

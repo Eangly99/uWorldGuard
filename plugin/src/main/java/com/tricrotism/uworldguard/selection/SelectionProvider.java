@@ -27,6 +27,14 @@ public interface SelectionProvider {
     }
 
     /**
+     * The vertices of the current selection when it is a convex polyhedron, or {@code null} if it is
+     * not one or the backend cannot supply one.
+     */
+    default @Nullable List<BlockVector3> getConvex(final Player player) {
+        return null;
+    }
+
+    /**
      * Replaces the player's selection with {@code selection}.
      *
      * <p>The write half of this interface, and the reason {@code /uwg select} can exist: reshaping a

@@ -137,18 +137,58 @@ public final class RegionSerializer {
                 sec.getInt("center-x"), sec.getInt("center-y"), sec.getInt("center-z"),
                 sec.getInt("radius-x"), sec.getInt("radius-y"), sec.getInt("radius-z"));
             case "global" -> new GlobalProtectedRegion();
+            case "polyhedron" -> new ProtectedPolyhedronRegion(id, readPoints3(sec));
+            case "composite" -> new ProtectedCompositeRegion(id, readShapes(sec, "parts"));
+            case "carved" ->
+                new ProtectedCarvedRegion(id, readRegion("solid", section(sec, "solid")), readShapes(sec, "holes"));
             default -> throw new IllegalArgumentException("unknown region type '" + type + "'");
         };
     }
 
+    private Map<String, ProtectedRegion> readShapes(final ConfigurationSection sec, final String key) {
+        final ConfigurationSection shapes = section(sec, key);
+        final Map<String, ProtectedRegion> out = new LinkedHashMap<>();
+        for (final String name : shapes.getKeys(false)) {
+            out.put(name, readRegion(name, section(shapes, name)));
+        }
+        return out;
+    }
+
+    private static ConfigurationSection section(final ConfigurationSection sec, final String key) {
+        final ConfigurationSection child = sec.getConfigurationSection(key);
+        if (child == null) {
+            throw new IllegalArgumentException("missing '" + key + "' section");
+        }
+        return child;
+    }
+
     private void writeRegion(final ConfigurationSection sec, final ProtectedRegion region) {
-        sec.set("type", region.getType().name().toLowerCase(Locale.ROOT));
+        writeShape(sec, region);
         sec.set("priority", region.getPriority());
         final ProtectedRegion parent = region.getParent();
         if (parent != null) {
             sec.set("parent", parent.getId());
         }
 
+        writeDomain(sec.createSection("owners"), region.getOwners());
+        writeDomain(sec.createSection("members"), region.getMembers());
+        final ConfigurationSection flagSec = sec.createSection("flags");
+        for (final Map.Entry<String, Object> e : region.getUnresolvedFlags().entrySet()) {
+            flagSec.set(e.getKey(), e.getValue());
+        }
+        for (final Map.Entry<Flag<?>, Object> e : region.getFlags().entrySet()) {
+            flagSec.set(e.getKey().getName(), marshal(e.getKey(), e.getValue()));
+        }
+        for (final Map.Entry<Flag<?>, RegionGroup> e : region.getFlagGroups().entrySet()) {
+            flagSec.set(e.getKey().getName() + "-group", e.getValue().serialized());
+        }
+    }
+
+    /**
+     * The type and geometry only, which is all a composite's part or a carved region's hole has.
+     */
+    private void writeShape(final ConfigurationSection sec, final ProtectedRegion region) {
+        sec.set("type", region.getType().name().toLowerCase(Locale.ROOT));
         switch (region) {
             case ProtectedCuboidRegion c -> {
                 writeVec(sec, "min", c.getMinimumPoint());
@@ -183,20 +223,23 @@ public final class RegionSerializer {
                 sec.set("radius-y", (max.y() - min.y()) / 2);
                 sec.set("radius-z", (max.z() - min.z()) / 2);
             }
+            case ProtectedPolyhedronRegion p -> {
+                final List<String> pts = new ArrayList<>();
+                for (final BlockVector3 v : p.getPoints()) {
+                    pts.add(v.x() + "," + v.y() + "," + v.z());
+                }
+                sec.set("points", pts);
+            }
+            case ProtectedCompositeRegion c -> {
+                final ConfigurationSection parts = sec.createSection("parts");
+                c.getParts().forEach((name, part) -> writeShape(parts.createSection(name), part));
+            }
+            case ProtectedCarvedRegion c -> {
+                writeShape(sec.createSection("solid"), c.getSolid());
+                final ConfigurationSection holes = sec.createSection("holes");
+                c.getHoles().forEach((name, hole) -> writeShape(holes.createSection(name), hole));
+            }
             default -> { /* global has no geometry */ }
-        }
-
-        writeDomain(sec.createSection("owners"), region.getOwners());
-        writeDomain(sec.createSection("members"), region.getMembers());
-        final ConfigurationSection flagSec = sec.createSection("flags");
-        for (final Map.Entry<String, Object> e : region.getUnresolvedFlags().entrySet()) {
-            flagSec.set(e.getKey(), e.getValue());
-        }
-        for (final Map.Entry<Flag<?>, Object> e : region.getFlags().entrySet()) {
-            flagSec.set(e.getKey().getName(), marshal(e.getKey(), e.getValue()));
-        }
-        for (final Map.Entry<Flag<?>, RegionGroup> e : region.getFlagGroups().entrySet()) {
-            flagSec.set(e.getKey().getName() + "-group", e.getValue().serialized());
         }
     }
 
@@ -329,6 +372,16 @@ public final class RegionSerializer {
 
     private void writeVec(final ConfigurationSection sec, final String key, final BlockVector3 v) {
         sec.set(key, List.of(v.x(), v.y(), v.z()));
+    }
+
+    private List<BlockVector3> readPoints3(final ConfigurationSection sec) {
+        final List<BlockVector3> points = new ArrayList<>();
+        for (final String raw : sec.getStringList("points")) {
+            final String[] parts = raw.split(",");
+            points.add(BlockVector3.at(Integer.parseInt(parts[0].trim()),
+                Integer.parseInt(parts[1].trim()), Integer.parseInt(parts[2].trim())));
+        }
+        return points;
     }
 
     private List<BlockVector3> readPoints(final ConfigurationSection sec) {

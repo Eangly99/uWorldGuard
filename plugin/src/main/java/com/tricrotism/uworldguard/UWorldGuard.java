@@ -256,7 +256,7 @@ public final class UWorldGuard extends com.sk89q.worldguard.bukkit.WorldGuardPlu
             WgCompatBridge.markInactive("another plugin provides WorldGuard ("
                 + claimant.getName() + " " + claimant.getPluginMeta().getVersion() + ")");
             getLogger().severe("WorldGuard is installed alongside uWorldGuard. The WorldGuard API"
-                + " compatibility layer is disabled — remove one of the two plugins.");
+                + " compatibility layer is disabled, remove one of the two plugins.");
             return false;
         }
         if (getServer().getPluginManager().getPlugin("WorldEdit") == null) {
@@ -277,7 +277,7 @@ public final class UWorldGuard extends com.sk89q.worldguard.bukkit.WorldGuardPlu
         WgCompatBridge.bind(regionContainer, this);
         WgCompatBridge.bypassCheck(Bypass::has);
         getLogger().info("WorldGuard API compatibility layer active (emulating the WorldGuard 7 API"
-            + " — this is uWorldGuard " + ReportedVersion.real(this)
+            + ", this is uWorldGuard " + ReportedVersion.real(this)
             + ", not EngineHub WorldGuard).");
     }
 
@@ -298,6 +298,12 @@ public final class UWorldGuard extends com.sk89q.worldguard.bukkit.WorldGuardPlu
     }
 
     private RegionStore createStore(final Settings settings) {
+        final RegionStore configured = createConfiguredStore(settings);
+        final RegionStore universe = createUniverseStore(configured);
+        return universe != null ? universe : configured;
+    }
+
+    private RegionStore createConfiguredStore(final Settings settings) {
         if (settings.isSqlEnabled()) {
             try {
                 getLogger().info("Using SQL storage backend.");
@@ -307,6 +313,38 @@ public final class UWorldGuard extends com.sk89q.worldguard.bukkit.WorldGuardPlu
             }
         }
         return new YamlRegionStore(getDataFolder());
+    }
+
+    /**
+     * On UniverseSpigot, regions live in the server's own region service, with {@code configured} kept
+     * as the store each world migrates from on its first load there. Reflection keeps every uSpigot
+     * type out of this class, so on Paper nothing from the {@code universe} source set is ever loaded.
+     */
+    private @Nullable RegionStore createUniverseStore(final RegionStore configured) {
+        if (getClassLoader().getResource("com/universeprojects/Universe.class") == null) {
+            return null;
+        }
+        final Object service;
+        try {
+            service = Class.forName("com.universeprojects.Universe").getMethod("regions").invoke(null);
+        } catch (final ReflectiveOperationException | LinkageError e) {
+            getLogger().log(Level.WARNING, "UniverseSpigot detected but its region service could not be reached. Using the configured storage instead.", e);
+            return null;
+        }
+        if (service == null) {
+            getLogger().warning("UniverseSpigot detected but it has no region service. Using the configured storage instead.");
+            return null;
+        }
+        try {
+            final RegionStore store = (RegionStore) Class.forName("com.tricrotism.uworldguard.universe.UniverseRegionStore")
+                .getMethod("create", Plugin.class, Object.class, RegionStore.class)
+                .invoke(null, this, service, configured);
+            getLogger().info("UniverseSpigot detected. Regions are stored and indexed by its region service.");
+            return store;
+        } catch (final ReflectiveOperationException | LinkageError e) {
+            getLogger().log(Level.WARNING, "UniverseSpigot detected but its region API does not match the one this build expects. Using the configured storage instead.", e);
+            return null;
+        }
     }
 
     /**

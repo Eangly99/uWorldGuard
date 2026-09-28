@@ -36,6 +36,12 @@ public class RegionQuery {
     }
 
     /**
+     * {@code cache} is not consulted. See {@link QueryCache} for why queries are not cached.
+     */
+    public RegionQuery(final QueryCache cache) {
+    }
+
+    /**
      * How the regions of a query result should be shaped before they are handed back.
      */
     public enum QueryOption {
@@ -54,6 +60,16 @@ public class RegionQuery {
          * Priority descending, with every region's parent chain pulled in.
          */
         COMPUTE_PARENTS;
+
+        /**
+         * A consumer that adds each region it is given to {@code target}, with its parent chain when
+         * this option is {@link #COMPUTE_PARENTS}.
+         */
+        public com.sk89q.worldguard.protection.util.RegionCollectionConsumer createIndexConsumer(
+            final Collection<? super ProtectedRegion> target
+        ) {
+            return new com.sk89q.worldguard.protection.util.RegionCollectionConsumer(target, this == COMPUTE_PARENTS);
+        }
 
         public List<ProtectedRegion> constructResult(final Set<ProtectedRegion> applicable) {
             if (this == NONE) {
@@ -99,7 +115,7 @@ public class RegionQuery {
         final ProtectedRegion global = set instanceof com.tricrotism.uworldguard.wgcompat.WrappedRegionSet wrapped
             ? wrapped.uwgGlobalRegion()
             : null;
-        return new com.tricrotism.uworldguard.wgcompat.ListRegionSet(
+        return com.sk89q.worldguard.protection.RegionResultSet.fromSortedList(
             QueryOption.COMPUTE_PARENTS.constructResult(set.getRegions()), global);
     }
 
@@ -110,7 +126,7 @@ public class RegionQuery {
             world == null || !com.tricrotism.uworldguard.wgcompat.WgCompatBridge.active() ? null
                 : com.tricrotism.uworldguard.wgcompat.WgCompatBridge.container().get(world);
         if (manager == null) {
-            return new com.tricrotism.uworldguard.wgcompat.ListRegionSet(List.of(), null);
+            return com.sk89q.worldguard.protection.RegionResultSet.fromSortedList(List.of(), null);
         }
         return new com.tricrotism.uworldguard.wgcompat.WrappedRegionSet(
             manager.getApplicableRegions(location.getBlockX(), location.getBlockY(), location.getBlockZ()),
@@ -217,7 +233,7 @@ public class RegionQuery {
         if (set instanceof com.tricrotism.uworldguard.wgcompat.WrappedRegionSet wrapped) {
             return wrapped.canBuild(associable);
         }
-        return ((com.tricrotism.uworldguard.wgcompat.ListRegionSet) set).canBuild(associable);
+        return ((com.sk89q.worldguard.protection.RegionResultSet) set).uwgCanBuild(associable);
     }
 
     private static org.bukkit.World worldOf(final Location location) {

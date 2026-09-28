@@ -2,6 +2,8 @@ package com.tricrotism.uworldguard.region;
 
 import com.tricrotism.uworldguard.flags.Flag;
 import com.tricrotism.uworldguard.flags.Flags;
+import com.tricrotism.uworldguard.flags.State;
+import com.tricrotism.uworldguard.flags.StateFlag;
 import com.tricrotism.uworldguard.util.BlockVector3;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
@@ -49,6 +51,24 @@ public final class RegionManager {
     private static final int CHUNK_CACHE_SLOTS = 1 << CHUNK_CACHE_BITS; // 16384
     private static final long CHUNK_HASH_MULTIPLIER = 0x9E3779B97F4A7C15L; // fibonacci hashing
     private volatile AtomicReferenceArray<@Nullable ChunkCandidates> chunkIndex = new AtomicReferenceArray<>(CHUNK_CACHE_SLOTS);
+    private volatile @Nullable SpatialIndex spatialIndex;
+
+    /**
+     * Internal (storage backends): route point lookups through {@code index} instead of the chunk
+     * cache, or back to the cache with {@code null}. Install it once the manager holds what the index
+     * already knows, since only later edits are forwarded. Plugins should not call this.
+     */
+    public void uwgUseIndex(final @Nullable SpatialIndex index) {
+        spatialIndex = index;
+        invalidateChunkIndex();
+    }
+
+    private void indexPut(final ProtectedRegion region) {
+        final SpatialIndex index = spatialIndex;
+        if (index != null) {
+            index.put(region);
+        }
+    }
 
     /**
      * Add {@code region}, replacing whatever held its id.
@@ -79,6 +99,7 @@ public final class RegionManager {
         dirty.set(true);
         flagIndexStale = true;
         invalidateChunkIndex();
+        indexPut(region);
     }
 
     /**
@@ -101,6 +122,7 @@ public final class RegionManager {
         dirty.set(true);
         flagIndexStale = true;
         invalidateChunkIndex();
+        indexPut(region);
         return null;
     }
 
@@ -144,6 +166,7 @@ public final class RegionManager {
         dirty.set(true);
         flagIndexStale = true;
         invalidateChunkIndex();
+        indexPut(replacement);
         return replaced;
     }
 
@@ -163,6 +186,10 @@ public final class RegionManager {
             dirty.set(true);
             flagIndexStale = true;
             invalidateChunkIndex();
+            final SpatialIndex index = spatialIndex;
+            if (index != null) {
+                index.remove(removed);
+            }
         }
         return removed;
     }
@@ -192,7 +219,8 @@ public final class RegionManager {
      * may overlap. Test {@link ProtectedRegion#contains} on the blocks that matter when that
      * difference counts.
      *
-     * <p>Walks every region in the world, so run it when a claim is made, not per move.
+     * <p>Without a backend index this walks every region in the world, so run it when a claim is
+     * made, not per move.
      */
     public List<ProtectedRegion> getRegionsIntersecting(final BlockVector3 a, final BlockVector3 b) {
         final int minX = Math.min(a.x(), b.x());
@@ -201,6 +229,12 @@ public final class RegionManager {
         final int maxX = Math.max(a.x(), b.x());
         final int maxY = Math.max(a.y(), b.y());
         final int maxZ = Math.max(a.z(), b.z());
+        final SpatialIndex index = spatialIndex;
+        if (index != null) {
+            final List<ProtectedRegion> hits = new ArrayList<>(index.intersecting(minX, minY, minZ, maxX, maxY, maxZ));
+            hits.sort(Comparator.comparingInt(ProtectedRegion::getPriority).reversed());
+            return hits;
+        }
         final List<ProtectedRegion> hits = new ArrayList<>();
         for (final ProtectedRegion region : regions.values()) {
             if (region instanceof GlobalProtectedRegion) {
@@ -257,6 +291,22 @@ public final class RegionManager {
     public void markDirty() {
         dirty.set(true);
         flagIndexStale = true;
+    }
+
+    /**
+     * {@code region}'s flags, group qualifiers, priority or parent changed. Owners and members have no
+     * way back to their region, so those edits reach an index at the next add or save instead.
+     *
+     * <p>Only a flag or group edit retires the flag index. Priority and parent do not change which
+     * flags any region sets, and a stale index costs the next query on a hot thread a full rebuild.
+     */
+    void regionEdited(final ProtectedRegion region, final boolean flagsChanged) {
+        if (flagsChanged) {
+            markDirty();
+        } else {
+            dirty.set(true);
+        }
+        indexPut(region);
     }
 
     /**
@@ -319,16 +369,21 @@ public final class RegionManager {
     }
 
     public ApplicableRegionSet getApplicableRegions(final int x, final int y, final int z) {
-        final long key = chunkKey(x, z);
-        final AtomicReferenceArray<@Nullable ChunkCandidates> cache = chunkIndex;
-        final int slot = (int) ((key * CHUNK_HASH_MULTIPLIER) >>> (64 - CHUNK_CACHE_BITS));
-        final ChunkCandidates cached = cache.get(slot);
+        final SpatialIndex index = spatialIndex;
         final List<ProtectedRegion> candidates;
-        if (cached != null && cached.key() == key) {
-            candidates = cached.regions();
+        if (index != null) {
+            candidates = index.candidatesAt(x, y, z);
         } else {
-            candidates = buildChunkCandidates(key);
-            cache.set(slot, new ChunkCandidates(key, candidates));
+            final long key = chunkKey(x, z);
+            final AtomicReferenceArray<@Nullable ChunkCandidates> cache = chunkIndex;
+            final int slot = (int) ((key * CHUNK_HASH_MULTIPLIER) >>> (64 - CHUNK_CACHE_BITS));
+            final ChunkCandidates cached = cache.get(slot);
+            if (cached != null && cached.key() == key) {
+                candidates = cached.regions();
+            } else {
+                candidates = buildChunkCandidates(key);
+                cache.set(slot, new ChunkCandidates(key, candidates));
+            }
         }
         if (candidates.isEmpty()) {
             return emptySet();
@@ -351,7 +406,27 @@ public final class RegionManager {
         if (matches == null) {
             return emptySet();
         }
-        return new ApplicableRegionSet(matches, global, this);
+        return new ApplicableRegionSet(matches, global, this,
+            candidates instanceof SpatialIndex.FlagResolver resolver ? resolver : null);
+    }
+
+    /**
+     * Whether {@link #stateAcross} can ever answer, so a caller can skip computing a bounding box.
+     */
+    boolean resolvesBoxes() {
+        return spatialIndex != null;
+    }
+
+    /**
+     * What {@link ApplicableRegionSet#queryState(StateFlag)} returns at every block of the box, or
+     * {@code null} when that is not proven and each block has to be tested.
+     */
+    @Nullable State stateAcross(
+        final int minX, final int minY, final int minZ, final int maxX, final int maxY, final int maxZ,
+        final StateFlag flag
+    ) {
+        final SpatialIndex index = spatialIndex;
+        return index == null ? null : index.stateAcross(minX, minY, minZ, maxX, maxY, maxZ, flag, anyFlagGroups());
     }
 
     /**
@@ -421,7 +496,7 @@ public final class RegionManager {
         final boolean groups = anyFlagGroups();
         ApplicableRegionSet cached = emptySet;
         if (cached == null || cached.globalRegion() != g || cached.usesGroups() != groups) {
-            cached = new ApplicableRegionSet(List.of(), g, this);
+            cached = new ApplicableRegionSet(List.of(), g, this, null);
             emptySet = cached;
         }
         return cached;

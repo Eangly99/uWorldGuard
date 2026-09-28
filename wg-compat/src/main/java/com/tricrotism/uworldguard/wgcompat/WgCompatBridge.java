@@ -49,9 +49,11 @@ public final class WgCompatBridge {
 
     /**
      * Internal: called first in uWorldGuard's disable, so shim callers fail fast during shutdown.
+     * Also shuts down the executor {@code WorldGuard.getExecutorService()} hands to consumers.
      */
     public static void unbind() {
         markInactive("uWorldGuard is not enabled");
+        com.sk89q.worldguard.WorldGuard.getInstance().disable();
     }
 
     public static boolean active() {

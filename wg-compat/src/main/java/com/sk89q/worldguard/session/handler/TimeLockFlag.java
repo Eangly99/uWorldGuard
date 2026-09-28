@@ -14,7 +14,7 @@ public class TimeLockFlag extends Handler {
 
     public static final Factory FACTORY = new Factory();
 
-    protected TimeLockFlag(final Session session) {
+    public TimeLockFlag(final Session session) {
         super(session);
     }
 

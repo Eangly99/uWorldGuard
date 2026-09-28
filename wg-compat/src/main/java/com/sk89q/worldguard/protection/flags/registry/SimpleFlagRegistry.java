@@ -7,7 +7,6 @@ package com.sk89q.worldguard.protection.flags.registry;
 
 import com.sk89q.worldguard.protection.flags.Flag;
 import com.sk89q.worldguard.protection.flags.Flags;
-import com.sk89q.worldguard.protection.flags.StringFlag;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -181,7 +180,7 @@ public class SimpleFlagRegistry implements FlagRegistry {
                 if (!createUnknown) {
                     continue;
                 }
-                flag = new StringFlag(entry.getKey());
+                flag = new UnknownFlag(entry.getKey());
             }
             final Object value = flag.unmarshal(entry.getValue());
             if (value != null) {

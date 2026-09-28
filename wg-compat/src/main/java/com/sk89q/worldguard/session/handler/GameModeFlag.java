@@ -5,6 +5,7 @@
 
 package com.sk89q.worldguard.session.handler;
 
+import com.sk89q.worldedit.world.gamemode.GameMode;
 import com.sk89q.worldguard.session.Session;
 
 /**
@@ -14,8 +15,23 @@ public class GameModeFlag extends Handler {
 
     public static final Factory FACTORY = new Factory();
 
-    protected GameModeFlag(final Session session) {
+    public GameModeFlag(final Session session) {
         super(session);
+    }
+
+    /**
+     * Always {@code null}: uWorldGuard applies the flag itself and does not report through this
+     * handler.
+     */
+    public GameMode getOriginalGameMode() {
+        return null;
+    }
+
+    /**
+     * @see #getOriginalGameMode()
+     */
+    public GameMode getSetGameMode() {
+        return null;
     }
 
     public static class Factory extends Handler.Factory<GameModeFlag> {

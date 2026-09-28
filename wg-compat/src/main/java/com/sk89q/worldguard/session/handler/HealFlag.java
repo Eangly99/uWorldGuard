@@ -14,7 +14,7 @@ public class HealFlag extends Handler {
 
     public static final Factory FACTORY = new Factory();
 
-    protected HealFlag(final Session session) {
+    public HealFlag(final Session session) {
         super(session);
     }
 

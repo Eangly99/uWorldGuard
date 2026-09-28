@@ -3,12 +3,14 @@
 // Clean-room reimplementation of the public WorldGuard 7 API for interoperability.
 // Not derived from WorldGuard source code.
 
-package com.tricrotism.uworldguard.wgcompat;
+package com.sk89q.worldguard.bukkit;
 
 import com.sk89q.worldedit.util.Location;
 import com.sk89q.worldedit.world.weather.WeatherType;
 import com.sk89q.worldedit.world.weather.WeatherTypes;
 import com.sk89q.worldguard.LocalPlayer;
+import com.tricrotism.uworldguard.wgcompat.Groups;
+import com.tricrotism.uworldguard.wgcompat.UuidSubject;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.title.Title;
 import org.bukkit.attribute.Attribute;
@@ -30,21 +32,32 @@ import java.util.UUID;
  *
  * <p>Only the members WorldGuard adds on top of WorldEdit are implemented; everything else is
  * WorldEdit's, so it moves with whatever WorldEdit is installed. Offline players have no
- * WorldEdit player to extend and keep the proxy in {@link PlayerWrapping}.
+ * WorldEdit player to extend and keep the proxy in
+ * {@code com.tricrotism.uworldguard.wgcompat.PlayerWrapping}.
+ *
+ * <p>This is WorldGuard's public type, so a consumer that casts a {@code LocalPlayer} to it or
+ * constructs one links. The shim caches one per online player; build through
+ * {@code WorldGuardPlugin.wrapPlayer} rather than the constructor to share it.
  */
-final class LocalBukkitPlayer extends com.sk89q.worldedit.bukkit.BukkitPlayer
+public class BukkitPlayer extends com.sk89q.worldedit.bukkit.BukkitPlayer
     implements LocalPlayer, UuidSubject {
 
     private final Player bukkit;
     private final UUID uniqueId;
 
-    LocalBukkitPlayer(final Player bukkit) {
+    /**
+     * {@code plugin} is not used and may be {@code null}.
+     */
+    public BukkitPlayer(final WorldGuardPlugin plugin, final Player bukkit) {
         super(bukkit);
         this.bukkit = bukkit;
         this.uniqueId = bukkit.getUniqueId();
     }
 
-    Player bukkit() {
+    /**
+     * Internal: the Bukkit player this wraps.
+     */
+    public final Player uwgBukkit() {
         return bukkit;
     }
 

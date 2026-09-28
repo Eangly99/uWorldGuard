@@ -123,6 +123,9 @@ public final class RegionMenu {
             case CYLINDER -> Material.CAULDRON;
             case SPHERE -> Material.SLIME_BALL;
             case GLOBAL -> Material.BEACON;
+            case POLYHEDRON -> Material.AMETHYST_SHARD;
+            case COMPOSITE -> Material.BRICKS;
+            case CARVED -> Material.CARVED_PUMPKIN;
         };
     }
 

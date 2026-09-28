@@ -25,8 +25,8 @@ import java.util.logging.Logger;
  * dispatch seam. Until then {@link SessionDispatch#ACTIVE} is false and the movement path costs one
  * boolean read.
  */
-public final class SessionBridge implements com.sk89q.worldguard.session.SessionManager,
-    SessionDispatch.Sink {
+public final class SessionBridge extends com.sk89q.worldguard.bukkit.session.BukkitSessionManager
+    implements SessionDispatch.Sink {
 
     public static final SessionBridge INSTANCE = new SessionBridge();
 

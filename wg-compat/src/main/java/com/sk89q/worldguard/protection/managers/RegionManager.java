@@ -97,7 +97,7 @@ public final class RegionManager {
         }
         overlapping.sort(null);
         com.tricrotism.uworldguard.wgcompat.CompatDiagnostics.REGION_READS.increment();
-        return new com.tricrotism.uworldguard.wgcompat.ListRegionSet(overlapping, globalRegion());
+        return com.sk89q.worldguard.protection.RegionResultSet.fromSortedList(overlapping, globalRegion());
     }
 
     /**

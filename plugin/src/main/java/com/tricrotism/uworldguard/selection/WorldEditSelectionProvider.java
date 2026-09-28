@@ -5,6 +5,7 @@ import com.sk89q.worldedit.LocalSession;
 import com.sk89q.worldedit.bukkit.BukkitAdapter;
 import com.sk89q.worldedit.bukkit.WorldEditPlugin;
 import com.sk89q.worldedit.math.BlockVector2;
+import com.sk89q.worldedit.regions.ConvexPolyhedralRegion;
 import com.sk89q.worldedit.regions.Polygonal2DRegion;
 import com.sk89q.worldedit.regions.Region;
 import com.sk89q.worldedit.regions.selector.CuboidRegionSelector;
@@ -68,6 +69,24 @@ public final class WorldEditSelectionProvider implements SelectionProvider {
             final List<BlockVector3> points = new ArrayList<>();
             for (final BlockVector2 p : poly.getPoints()) {
                 points.add(BlockVector3.at(p.x(), 0, p.z()));
+            }
+            return points;
+        } catch (final IncompleteRegionException e) {
+            return null;
+        }
+    }
+
+    @Override
+    public @Nullable List<BlockVector3> getConvex(final Player player) {
+        final LocalSession session = worldEdit.getSession(player);
+        try {
+            final Region region = session.getSelection(BukkitAdapter.adapt(player.getWorld()));
+            if (!(region instanceof ConvexPolyhedralRegion convex)) {
+                return null;
+            }
+            final List<BlockVector3> points = new ArrayList<>();
+            for (final com.sk89q.worldedit.math.BlockVector3 p : convex.getVertices()) {
+                points.add(BlockVector3.at(p.x(), p.y(), p.z()));
             }
             return points;
         } catch (final IncompleteRegionException e) {

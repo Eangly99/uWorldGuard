@@ -34,10 +34,12 @@ import java.util.logging.Level;
  *       these methods.</li>
  * </ul>
  *
- * <p>{@code getConfigManager()}, {@code getPlayerMoveListener()}, {@code createProtectionQuery()},
- * {@code getWorldEdit()}, {@code checkPermission(...)} and {@code onCommand(...)} are not shipped;
- * each returns or throws a type this layer does not provide.
- * {@code WorldGuard.getInstance().getPlatform().getGlobalStateManager()} replaces the first.
+ * <p>The WorldEdit-typed members added for consumers ({@code getWorldEdit()},
+ * {@code checkPermission(...)}) name those types only in their signatures or behind a checkcast, so
+ * the contract above still holds.
+ *
+ * <p>{@code getPlayerMoveListener()} and {@code onCommand(...)} are not shipped: the first returns a
+ * WorldGuard listener type this layer does not provide, and uWorldGuard registers its own commands.
  */
 public class WorldGuardPlugin extends org.bukkit.plugin.java.JavaPlugin {
 
@@ -83,6 +85,35 @@ public class WorldGuardPlugin extends org.bukkit.plugin.java.JavaPlugin {
 
     public boolean hasPermission(final org.bukkit.command.CommandSender sender, final String perm) {
         return sender.hasPermission(perm);
+    }
+
+    /**
+     * @throws com.sk89q.minecraft.util.commands.CommandPermissionsException when {@code sender} lacks
+     *                                                                       {@code perm}
+     */
+    public void checkPermission(final org.bukkit.command.CommandSender sender, final String perm)
+        throws com.sk89q.minecraft.util.commands.CommandPermissionsException {
+        com.tricrotism.uworldguard.wgcompat.PlayerWrapping.checkPermission(sender, perm);
+    }
+
+    public BukkitConfigurationManager getConfigManager() {
+        return (BukkitConfigurationManager)
+            com.sk89q.worldguard.WorldGuard.getInstance().getPlatform().getGlobalStateManager();
+    }
+
+    public ProtectionQuery createProtectionQuery() {
+        return new ProtectionQuery();
+    }
+
+    /**
+     * The installed WorldEdit, or {@code null} when there is none.
+     */
+    public com.sk89q.worldedit.bukkit.WorldEditPlugin getWorldEdit() {
+        final org.bukkit.plugin.Plugin worldEdit = getServer().getPluginManager().getPlugin("WorldEdit");
+        if (worldEdit == null) {
+            return null;
+        }
+        return (com.sk89q.worldedit.bukkit.WorldEditPlugin) worldEdit;
     }
 
     /**
