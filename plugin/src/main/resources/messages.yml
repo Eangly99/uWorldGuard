@@ -1,21 +1,16 @@
-# uWorldGuard messages.
+# uWorldGuard messages. MiniMessage format (https://docs.advntr.dev/minimessage/).
+# PlaceholderAPI %placeholders% work when it is installed, resolved per player each time a message
+# is sent, so keep them out of messages you do not need them in.
+# Set any entry to "" or false to turn it off.
 #
-# Each entry supports MiniMessage formatting (https://docs.advntr.dev/minimessage/) and, when
-# PlaceholderAPI is installed, %placeholder% values resolved against the receiving player.
-# Set an entry to "" (empty) or false to disable it.
-#
-# no-permission is the shared denial message, used whenever a flag blocks a player. To word it
-# differently for one flag, add "no-permission-<flag>" — the per-flag entry wins over the shared
-# one. The two disable independently: set a per-flag entry to false to silence only that flag,
-# or disable no-permission itself to silence every flag that has no override of its own.
-# Cooldown is tracked separately per flag, so one flag going quiet never silences another.
-#
-# Flags that can send a denial:
-#   block-break, block-place, interact, chest-access, end-crystal-place, end-crystal-interact,
+# no-permission is shown whenever a flag blocks a player. Override it for one flag with
+# no-permission-<flag>, e.g. no-permission-chest-access. Flags that can send it:
+#   block-break, block-place, break-placed-only, interact, chest-access, end-crystal-place, end-crystal-interact,
 #   villager-trade, permit-workbenches, inventory-craft, disable-completely, disable-throw,
 #   deny-item-drops, blocked-cmds
 
-# Seconds a player must wait before the same message is shown to them again. 0 = no cooldown.
+# Seconds before the same message can be shown to a player again, tracked per flag. 0 = no limit.
+# Higher cuts chat spam from players spamming a denied action.
 cooldown-seconds: 3
 
 messages:
@@ -24,9 +19,8 @@ messages:
     # no-permission-block-break: false
     entry-denied: "<red>You cannot enter this area."
     exit-denied: "<red>You cannot leave this area."
-    # Shown when player-count-limit refuses entry. <count> is how many are inside, <limit> the cap.
+    # player-count-limit refused entry. <count> is how many are inside, <limit> the cap.
     region-full: "<red>This area is full (<count>/<limit>)."
-    # Announced to staff holding uworldguard.notify when the notify-enter / notify-leave flags are
-    # set on a region. <player> is who crossed, <region> the region they crossed into or out of.
+    # Sent to staff with uworldguard.notify for regions using notify-enter / notify-leave.
     notify-enter: "<gray>[<aqua>uWG</aqua>] <white><player></white> entered <aqua><region>"
     notify-leave: "<gray>[<aqua>uWG</aqua>] <white><player></white> left <aqua><region>"

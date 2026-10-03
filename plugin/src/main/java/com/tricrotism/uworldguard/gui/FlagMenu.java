@@ -23,6 +23,7 @@ import xyz.xenondevs.invui.window.Window;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
 
 /**
@@ -40,15 +41,26 @@ public final class FlagMenu {
     private final RegionManager manager;
     private final ProtectedRegion region;
     private final ChatInputService chatInput;
+    private final @Nullable Consumer<Player> back;
+    /**
+     * The view an edit returns to: the list and page the player was on, so editing a flag never
+     * sends them back to the start.
+     */
+    private Consumer<Player> returnTo = this::openLanding;
 
+    /**
+     * @param back reopens the menu this one was reached from, or {@code null} when it was opened by a
+     *             command and there is nothing to go back to
+     */
     public FlagMenu(
         final World world, final RegionManager manager, final ProtectedRegion region,
-        final ChatInputService chatInput
+        final ChatInputService chatInput, final @Nullable Consumer<Player> back
     ) {
         this.world = world;
         this.manager = manager;
         this.region = region;
         this.chatInput = chatInput;
+        this.back = back;
     }
 
     public void open(final Player player) {
@@ -69,6 +81,7 @@ public final class FlagMenu {
     }
 
     private void openLanding(final Player player) {
+        returnTo = this::openLanding;
         final PagedGui<Item> gui = PagedGui.itemsBuilder()
             .setStructure(
                 "x x x x x x x x x",
@@ -76,10 +89,11 @@ public final class FlagMenu {
                 "x x x x x x x x x",
                 "x x x x x x x x x",
                 "x x x x x x x x x",
-                "A . R . . . . . C")
+                back == null ? "A . R . . . . . C" : "A . R . . . . B C")
             .addIngredient('x', Markers.CONTENT_LIST_SLOT_HORIZONTAL)
             .addIngredient('A', activeButton())
             .addIngredient('R', searchButton())
+            .addIngredient('B', back == null ? MenuItems.close() : MenuItems.back("region", back))
             .addIngredient('C', MenuItems.close())
             .setContent(categoryButtons())
             .build();
@@ -102,7 +116,7 @@ public final class FlagMenu {
                 .addClickHandler((item, click) -> openList(click.player(),
                     Messages.format("<dark_gray><name>",
                         Placeholder.unparsed("name", category.getDisplayName())),
-                    flag -> flag.getCategory() == category))
+                    flag -> flag.getCategory() == category, 0))
                 .build());
         }
         return items;
@@ -156,7 +170,7 @@ public final class FlagMenu {
                     Messages.format("<!i><dark_gray>Click to view only the flags you've set")))
             .addClickHandler((item, click) -> openList(click.player(),
                 Messages.format("<dark_gray>Active flags"),
-                flag -> region.getFlags().get(flag) != null))
+                flag -> region.getFlags().get(flag) != null, 0))
             .build();
     }
 
@@ -172,20 +186,21 @@ public final class FlagMenu {
     }
 
     private void promptSearch(final Player player) {
-        player.closeInventory();
-        player.sendMessage(Messages.format("<gray>Type a search query in chat, or <red>cancel</red>."));
-        chatInput.await(player.getUniqueId(), raw -> {
-            final String query = raw.trim().toLowerCase(Locale.ROOT);
-            if (query.isEmpty()) {
-                openLanding(player);
-                return;
-            }
-            openList(player, Messages.format("<dark_gray>Search: <aqua><query>",
-                Placeholder.unparsed("query", query)), flag -> flag.getName().contains(query));
-        });
+        MenuItems.prompt(player, chatInput, Messages.format("<gray>Type part of a flag name, e.g. <white>pvp</white>."),
+            null, raw -> {
+                final String query = raw.trim().toLowerCase(Locale.ROOT);
+                if (query.isEmpty()) {
+                    openLanding(player);
+                    return;
+                }
+                openList(player, Messages.format("<dark_gray>Search: <aqua><query>",
+                    Placeholder.unparsed("query", query)), flag -> flag.getName().contains(query), 0);
+            }, () -> openLanding(player));
     }
 
-    private void openList(final Player player, final Component title, final Predicate<Flag<?>> filter) {
+    private void openList(
+        final Player player, final Component title, final Predicate<Flag<?>> filter, final int page
+    ) {
         final PagedGui<Item> gui = PagedGui.itemsBuilder()
             .setStructure(
                 "x x x x x x x x x",
@@ -197,18 +212,13 @@ public final class FlagMenu {
             .addIngredient('x', Markers.CONTENT_LIST_SLOT_HORIZONTAL)
             .addIngredient('<', new PageButtons.Previous())
             .addIngredient('>', new PageButtons.Next())
-            .addIngredient('B', backButton())
+            .addIngredient('B', MenuItems.back("categories", this::openLanding))
             .addIngredient('C', MenuItems.close())
             .setContent(flagItems(filter))
             .build();
+        gui.setPage(page);
+        returnTo = viewer -> openList(viewer, title, filter, gui.getPage());
         window(player, title, gui);
-    }
-
-    private Item backButton() {
-        return Item.builder()
-            .setItemProvider(new ItemBuilder(Material.OAK_DOOR).setName(Messages.format("<!i><yellow>Back")))
-            .addClickHandler((_, click) -> openLanding(click.player()))
-            .build();
     }
 
     /**
@@ -278,6 +288,14 @@ public final class FlagMenu {
             : value == State.DENY || Boolean.FALSE.equals(value) ? "<red>" : "<white>";
         return Messages.format("<!i><gray>Now: " + colour + "<value>",
             Placeholder.unparsed("value", String.valueOf(value)));
+    }
+
+    /**
+     * A region's stored value for {@code flag} is always that flag's own type, so the cast holds.
+     */
+    @SuppressWarnings("unchecked")
+    private static String inputOf(final Flag<?> flag, final Object value) {
+        return ((Flag<Object>) flag).toInput(value);
     }
 
     private static String typeHint(final Flag<?> flag) {
@@ -366,22 +384,29 @@ public final class FlagMenu {
     }
 
     private void promptValue(final Player player, final Flag<?> flag) {
-        player.closeInventory();
-        player.sendMessage(Messages.format(
-            "<gray>Type a new value for <aqua>" + flag.getName() + "</aqua> in chat, or <red>cancel</red>."));
-        chatInput.await(player.getUniqueId(), value -> {
-            if (gone(player)) {
-                return;
-            }
-            final Object parsed = flag.parse(value, player);
-            if (parsed == null) {
-                player.sendMessage(Messages.format("<red>Invalid value for <aqua><flag></aqua>.",
-                    Placeholder.unparsed("flag", flag.getName())));
-            } else {
-                store(player, flag, parsed);
-            }
-            open(player);
-        });
+        final Object current = region.getFlags().get(flag);
+        final Consumer<Player> after = returnTo;
+        MenuItems.prompt(player, chatInput,
+            Messages.format("<gray>Type a new value for <aqua><flag></aqua> <dark_gray>(<hint>)",
+                Placeholder.unparsed("flag", flag.getName()),
+                Placeholder.unparsed("hint", typeHint(flag))),
+            current == null ? null : inputOf(flag, current),
+            value -> {
+                if (gone(player)) {
+                    return;
+                }
+                final Object parsed = flag.parse(value, player);
+                if (parsed == null) {
+                    player.sendMessage(Messages.format("<red>That isn't a valid value for <aqua><flag></aqua>. "
+                            + "It accepts <white><hint></white>.",
+                        Placeholder.unparsed("flag", flag.getName()),
+                        Placeholder.unparsed("hint", typeHint(flag))));
+                } else if (store(player, flag, parsed)) {
+                    player.sendMessage(Messages.format("<green>Set <aqua><flag></aqua>.",
+                        Placeholder.unparsed("flag", flag.getName())));
+                }
+                after.accept(player);
+            }, () -> after.accept(player));
     }
 
     private static Material iconFor(final FlagCategory category) {

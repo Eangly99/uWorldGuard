@@ -1,10 +1,7 @@
 package com.tricrotism.uworldguard.universe;
 
 import com.tricrotism.uworldguard.domain.DefaultDomain;
-import com.tricrotism.uworldguard.flags.Flag;
-import com.tricrotism.uworldguard.flags.Flags;
-import com.tricrotism.uworldguard.flags.RegionGroup;
-import com.tricrotism.uworldguard.flags.State;
+import com.tricrotism.uworldguard.flags.*;
 import com.tricrotism.uworldguard.region.*;
 import com.tricrotism.uworldguard.util.BlockVector3;
 import com.universeprojects.api.region.Region;
@@ -40,9 +37,28 @@ import java.util.logging.Logger;
     private final Logger log;
     private final Set<String> registered = ConcurrentHashMap.newKeySet();
 
+    /**
+     * List-valued keys are registered up front rather than on first write. uSpigot loads its stored
+     * regions when a world loads, before anything here writes, and a list under an unregistered key
+     * is kept untyped with one warning per region on every boot.
+     */
     UniverseRegions(final RegionFlags flags, final Logger log) {
         this.flags = flags;
         this.log = log;
+        registerStringSet(OWNERS);
+        registerStringSet(MEMBERS);
+        for (final Flag<?> flag : Flags.all()) {
+            if (flag instanceof MaterialSetFlag || flag instanceof EntityTypeSetFlag
+                || flag instanceof PotionEffectSetFlag || flag instanceof StringSetFlag) {
+                registerStringSet(flag.getName());
+            }
+        }
+    }
+
+    private void registerStringSet(final String key) {
+        if (registered.add(key)) {
+            flags.registerStringSetFlag(key, null);
+        }
     }
 
     RegionDefinition definition(final String world, final ProtectedRegion region) {
@@ -201,8 +217,11 @@ import java.util.logging.Logger;
                 if (flag == null) {
                     region.putUnresolvedFlag(key, stored);
                 } else if (!setFlag(region, flag, stored)) {
+                    // kept as stored so a save writes it back unchanged rather than deleting it
+                    region.putUnresolvedFlag(key, stored);
                     log.warning("Region '" + region.getId() + "' has a value for flag '" + key
-                        + "' that uWorldGuard cannot read: " + stored + ". It is ignored.");
+                        + "' that uWorldGuard cannot read: " + stored + ". It has no effect here and is"
+                        + " kept as stored.");
                 }
             }
         }

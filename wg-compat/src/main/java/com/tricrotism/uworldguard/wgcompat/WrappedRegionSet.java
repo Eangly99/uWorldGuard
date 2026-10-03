@@ -162,7 +162,7 @@ public final class WrappedRegionSet implements ApplicableRegionSet {
             if (engine == null) {
                 return flag.getDefault();
             }
-            final V value = (V) FlagBridge.toShimValue(flag, backing.queryValue(engine));
+            final V value = (V) FlagBridge.toShimValue(flag, backing.queryValue(engine, uuidOf(subject)));
             return value != null ? value : flag.getDefault();
         }
         final List<ProtectedRegion> regions = regionList();
@@ -182,17 +182,43 @@ public final class WrappedRegionSet implements ApplicableRegionSet {
         if (engine == null) {
             return List.of();
         }
+        final UUID uuid = uuidOf(subject);
         final List<V> values = new ArrayList<>(4);
         for (int i = 0, n = backing.size(); i < n; i++) {
-            final Object raw = backing.get(i).getFlag(engine);
-            if (raw != null) {
-                final V value = (V) FlagBridge.toShimValue(flag, raw);
-                if (value != null) {
-                    values.add(value);
-                }
+            addValue(values, flag, engine, backing.get(i), uuid);
+        }
+        if (values.isEmpty() && manager != null) {
+            final com.tricrotism.uworldguard.region.ProtectedRegion global =
+                manager.getRegion(com.tricrotism.uworldguard.region.GlobalProtectedRegion.ID);
+            if (global != null) {
+                addValue(values, flag, engine, global, uuid);
             }
         }
         return values;
+    }
+
+    /**
+     * Adds {@code region}'s value when its group qualifier covers {@code subject}, judged per region
+     * as the engine's own resolution does.
+     */
+    @SuppressWarnings("unchecked")
+    private static <V> void addValue(
+        final List<V> values, final Flag<V> flag, final com.tricrotism.uworldguard.flags.Flag<Object> engine,
+        final com.tricrotism.uworldguard.region.ProtectedRegion region, final UUID subject
+    ) {
+        final Object raw = region.getFlag(engine);
+        if (raw == null) {
+            return;
+        }
+        final com.tricrotism.uworldguard.flags.RegionGroup group = region.getFlagGroup(engine);
+        if (group != com.tricrotism.uworldguard.flags.RegionGroup.ALL
+            && !group.contains(subject == null ? null : region.getAssociation(subject))) {
+            return;
+        }
+        final V value = (V) FlagBridge.toShimValue(flag, raw);
+        if (value != null) {
+            values.add(value);
+        }
     }
 
     @Override

@@ -9,7 +9,9 @@ import com.tricrotism.uworldguard.region.RegionQuery;
 import com.tricrotism.uworldguard.text.MessageService;
 import io.papermc.paper.event.entity.EntityPushedByEntityAttackEvent;
 import org.bukkit.Material;
+import org.bukkit.World;
 import org.bukkit.entity.*;
+import org.bukkit.event.Event;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -49,9 +51,14 @@ public final class ItemUseListener implements Listener {
         this.messages = messages;
     }
 
-    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    /**
+     * Not {@code ignoreCancelled}: for this event that means "the block was denied", which is true of
+     * every click at air and of a throwable used against a protected block, and the item is still
+     * used in both.
+     */
+    @EventHandler(priority = EventPriority.HIGH)
     public void onUse(final PlayerInteractEvent event) {
-        if (EventGate.disabled(event)) {
+        if (event.useItemInHand() == Event.Result.DENY || EventGate.disabled(event)) {
             return;
         }
         if (event.getItem() == null || !container.anyRegionUses(Flags.DISABLE_COMPLETELY)) {
@@ -76,7 +83,7 @@ public final class ItemUseListener implements Listener {
         if (!(event.getDamager() instanceof Player player)) {
             return;
         }
-        if (!container.anyRegionUses(Flags.DISABLE_COMPLETELY)) {
+        if (!query.usesFlag(event.getEntity().getWorld(), Flags.DISABLE_COMPLETELY)) {
             return;
         }
         final Material weapon = player.getInventory().getItemInMainHand().getType();
@@ -158,6 +165,9 @@ public final class ItemUseListener implements Listener {
             return;
         }
         final Entity victim = event.getEntity();
+        if (!query.usesFlag(victim.getWorld(), Flags.WIND_CHARGE)) {
+            return;
+        }
         final ProjectileSource shooter = windCharge.getShooter();
         if (shooter instanceof Entity thrower && thrower.equals(victim)) {
             return;
@@ -194,11 +204,11 @@ public final class ItemUseListener implements Listener {
         if (EventGate.disabled(event)) {
             return;
         }
-        if (!container.anyRegionUses(Flags.ITEM_DROP) && !container.anyRegionUses(Flags.DENY_ITEM_DROPS)) {
+        final Player player = event.getPlayer();
+        final World world = player.getWorld();
+        if (!query.usesFlag(world, Flags.ITEM_DROP) && !query.usesFlag(world, Flags.DENY_ITEM_DROPS)) {
             return;
         }
-        final Player player = event.getPlayer();
-        final Material item = event.getItemDrop().getItemStack().getType();
         final ApplicableRegionSet set = query.getApplicableRegions(player);
         if (!set.testState(Flags.ITEM_DROP, player.getUniqueId())) {
             if (Bypass.has(player)) {
@@ -208,7 +218,8 @@ public final class ItemUseListener implements Listener {
             messages.sendDeny(player, Flags.ITEM_DROP);
             return;
         }
-        if (set.flagSetContains(Flags.DENY_ITEM_DROPS, item)) {
+        if (set.worldUses(Flags.DENY_ITEM_DROPS)
+            && set.flagSetContains(Flags.DENY_ITEM_DROPS, event.getItemDrop().getItemStack().getType())) {
             if (Bypass.has(player)) {
                 return;
             }
@@ -225,13 +236,15 @@ public final class ItemUseListener implements Listener {
         if (!(event.getEntity() instanceof Player player)) {
             return;
         }
-        if (!container.anyRegionUses(Flags.ITEM_PICKUP) && !container.anyRegionUses(Flags.DENY_ITEM_PICKUP)) {
+        final World world = player.getWorld();
+        if (!query.usesFlag(world, Flags.ITEM_PICKUP) && !query.usesFlag(world, Flags.DENY_ITEM_PICKUP)) {
             return;
         }
-        final Material item = event.getItem().getItemStack().getType();
+        // A cancelled pickup fires again every tick, so the item is only read when the list is in use.
         final ApplicableRegionSet set = query.getApplicableRegions(player);
         if (!set.testState(Flags.ITEM_PICKUP, player.getUniqueId())
-            || set.flagSetContains(Flags.DENY_ITEM_PICKUP, item)) {
+            || set.worldUses(Flags.DENY_ITEM_PICKUP)
+            && set.flagSetContains(Flags.DENY_ITEM_PICKUP, event.getItem().getItemStack().getType())) {
             if (Bypass.has(player)) {
                 return;
             }

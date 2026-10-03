@@ -12,6 +12,7 @@ import com.sk89q.worldguard.protection.flags.StateFlag;
 import com.sk89q.worldguard.protection.regions.ProtectedRegion;
 import com.sk89q.worldguard.protection.regions.RegionQuery;
 import com.sk89q.worldguard.session.handler.Handler;
+import org.jspecify.annotations.Nullable;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -173,12 +174,26 @@ public class Session {
     public Location uwgTestMoveTo(
         final LocalPlayer player, final Location from, final Location to, final MoveType moveType
     ) {
+        if (dispatch.length == 0) {
+            return null;
+        }
+        return uwgTestMoveTo(player, from, to, moveType, null, regionsAt(to));
+    }
+
+    /**
+     * Internal: the same, with the region sets the caller already resolved, so a move it has just
+     * looked up is not looked up again. {@code fromSet} may be {@code null} to resolve it only if the
+     * handlers let the move through.
+     */
+    public Location uwgTestMoveTo(
+        final LocalPlayer player, final Location from, final Location to, final MoveType moveType,
+        final @Nullable ApplicableRegionSet knownFrom, final ApplicableRegionSet toSet
+    ) {
         final Handler[] current = dispatch;
         if (current.length == 0) {
             return null;
         }
         final boolean cancellable = moveType.isCancellable();
-        final ApplicableRegionSet toSet = regionsAt(to);
         for (final Handler handler : current) {
             final boolean allowed;
             try {
@@ -192,7 +207,7 @@ public class Session {
             }
         }
 
-        final ApplicableRegionSet fromSet = regionsAt(from);
+        final ApplicableRegionSet fromSet = knownFrom != null ? knownFrom : regionsAt(from);
         if ((fromSet.size() == 0 && toSet.size() == 0) || sameRegions(fromSet, toSet)) {
             com.tricrotism.uworldguard.wgcompat.CompatDiagnostics.SESSION_DISPATCHES.increment();
             return null;

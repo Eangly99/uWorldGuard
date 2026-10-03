@@ -10,8 +10,9 @@ import org.jspecify.annotations.Nullable;
 import java.util.UUID;
 
 /**
- * Fired before a player is added to or removed from a region's owners or members. Cancelling leaves
- * the domain untouched.
+ * Fired before a player or a permission group is added to or removed from a region's owners or
+ * members. Exactly one of {@link #getPlayer()} and {@link #getGroup()} is set. Cancelling leaves the
+ * domain untouched.
  *
  * <p>Usually asynchronous: resolving a typed name to a UUID reads player data off disk, so the
  * command and the menu's add prompt do that off the region thread and this fires there. Removing
@@ -37,7 +38,8 @@ public class RegionMembershipChangeEvent extends RegionChangeEvent {
     private static final HandlerList HANDLERS = new HandlerList();
 
     private final Role role;
-    private final UUID player;
+    private final @Nullable UUID player;
+    private final @Nullable String group;
     private final boolean adding;
 
     public RegionMembershipChangeEvent(
@@ -47,6 +49,21 @@ public class RegionMembershipChangeEvent extends RegionChangeEvent {
         super(world, region, actor);
         this.role = role;
         this.player = player;
+        this.group = null;
+        this.adding = adding;
+    }
+
+    /**
+     * A permission group being trusted or untrusted, the {@code g:} form of the member commands.
+     */
+    public RegionMembershipChangeEvent(
+        final World world, final ProtectedRegion region, final Role role, final String group,
+        final boolean adding, final @Nullable CommandSender actor
+    ) {
+        super(world, region, actor);
+        this.role = role;
+        this.player = null;
+        this.group = group;
         this.adding = adding;
     }
 
@@ -58,10 +75,18 @@ public class RegionMembershipChangeEvent extends RegionChangeEvent {
     }
 
     /**
-     * The player being added or removed. Resolved from a name, so they need not be online.
+     * The player being added or removed. Resolved from a name, so they need not be online. Null when
+     * the edit is to a group, see {@link #getGroup()}.
      */
-    public UUID getPlayer() {
+    public @Nullable UUID getPlayer() {
         return player;
+    }
+
+    /**
+     * The permission group being added or removed, or null when the edit is to a player.
+     */
+    public @Nullable String getGroup() {
+        return group;
     }
 
     /**

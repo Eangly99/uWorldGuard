@@ -10,18 +10,24 @@ import java.util.function.Consumer;
 
 /**
  * Tracks players the GUI is waiting on for a typed chat value. {@link ChatInputListener} consumes
- * the next chat message from such a player and feeds it back to the registered callback.
+ * the next chat message from such a player and feeds it back to the registered callback, or runs the
+ * cancel action when they type {@code cancel}.
  */
 @NullMarked
 public final class ChatInputService {
 
-    private final Map<UUID, Consumer<String>> pending = new ConcurrentHashMap<>();
+    /**
+     * What to do with the typed value, and what to do if the player types {@code cancel} instead.
+     */
+    public record Prompt(Consumer<String> onValue, Runnable onCancel) {}
 
-    public void await(final UUID player, final Consumer<String> callback) {
-        pending.put(player, callback);
+    private final Map<UUID, Prompt> pending = new ConcurrentHashMap<>();
+
+    public void await(final UUID player, final Consumer<String> onValue, final Runnable onCancel) {
+        pending.put(player, new Prompt(onValue, onCancel));
     }
 
-    public @Nullable Consumer<String> take(final UUID player) {
+    public @Nullable Prompt take(final UUID player) {
         return pending.remove(player);
     }
 

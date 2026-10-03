@@ -130,7 +130,22 @@ public abstract class ProtectedRegion implements ChangeTracked, Comparable<Prote
         return parent == null ? null : com.tricrotism.uworldguard.wgcompat.RegionAdapters.region(parent, manager);
     }
 
+    /**
+     * @throws IllegalArgumentException if this region and {@code parent} are held by different
+     *                                  worlds. Flag resolution assumes a parent lives in its child's
+     *                                  world, and removing the parent in its own world would never
+     *                                  unparent this region. A detached region may take any parent,
+     *                                  as under WorldGuard.
+     */
     public void setParent(final ProtectedRegion parent) throws CircularInheritanceException {
+        if (parent != null) {
+            final com.tricrotism.uworldguard.region.RegionManager world = backing.uwgOwner();
+            final com.tricrotism.uworldguard.region.RegionManager parentWorld = parent.backing.uwgOwner();
+            if (world != null && parentWorld != null && world != parentWorld) {
+                throw new IllegalArgumentException("Region '" + parent.getId()
+                    + "' belongs to another world and cannot be the parent of '" + getId() + "'");
+            }
+        }
         try {
             backing.setParent(parent == null ? null : parent.backing);
         } catch (final IllegalArgumentException circular) {
@@ -282,7 +297,7 @@ public abstract class ProtectedRegion implements ChangeTracked, Comparable<Prote
         setFlags(other.getFlags());
         try {
             setParent(other.getParent());
-        } catch (final CircularInheritanceException ignored) {
+        } catch (final CircularInheritanceException | IllegalArgumentException ignored) {
             // The source region's parent chain cannot be reused here; leave this region's parent alone.
         }
     }

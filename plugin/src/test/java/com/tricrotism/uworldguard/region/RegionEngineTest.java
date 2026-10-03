@@ -361,6 +361,110 @@ class RegionEngineTest {
     }
 
     @Test
+    void removingOrReplacingAParentStillReachesItsChildrenAfterAReparent() {
+        final RegionManager manager = new RegionManager();
+        final ProtectedCuboidRegion first = cuboid("first", 0, 0, 64, 64);
+        final ProtectedCuboidRegion second = cuboid("second", 0, 0, 64, 64);
+        final ProtectedCuboidRegion child = cuboid("child", 8, 8, 16, 16);
+        manager.addRegion(first);
+        manager.addRegion(second);
+        manager.addRegion(child);
+        child.setParent(first);
+        child.setParent(second);
+
+        manager.removeRegion("first");
+        assertSame(second, child.getParent(), "first lost its only child to the reparent");
+
+        final ProtectedCuboidRegion replacement = cuboid("second", 0, 0, 128, 128);
+        manager.addRegion(replacement);
+        assertSame(replacement, child.getParent());
+
+        manager.removeRegion("second");
+        assertNull(child.getParent());
+    }
+
+    @Test
+    void editsThroughAReplacedInstanceNoLongerReachTheWorld() {
+        final RegionManager manager = new RegionManager();
+        final ProtectedCuboidRegion added = cuboid("plot", 0, 0, 32, 32);
+        manager.addRegion(added);
+        final ProtectedCuboidRegion redefined = cuboid("plot", 0, 0, 64, 64);
+        manager.addRegion(redefined);
+        manager.redefineRegion(cuboid("plot", 0, 0, 128, 128));
+        manager.clearDirty();
+
+        added.setFlag(Flags.PVP, State.DENY);
+        redefined.setFlag(Flags.PVP, State.DENY);
+
+        assertFalse(manager.clearDirty(), "a dead instance must not mark the world dirty");
+        assertFalse(manager.anyRegionUses(Flags.PVP));
+    }
+
+    @Test
+    void replacingAChildReleasesItsParent() {
+        final RegionManager manager = new RegionManager();
+        final ProtectedCuboidRegion parent = cuboid("mall", 0, 0, 64, 64);
+        final ProtectedCuboidRegion child = cuboid("shop", 8, 8, 24, 24);
+        child.setParent(parent);
+        manager.addRegion(parent);
+        manager.addRegion(child);
+
+        manager.redefineRegion(cuboid("shop", 8, 8, 32, 32));
+        assertTrue(parent.uwgHasChildren(), "the redefined child still names it");
+
+        manager.addRegion(cuboid("shop", 8, 8, 32, 32));
+        assertFalse(parent.uwgHasChildren(), "no region names it any more");
+    }
+
+    @Test
+    void mixedCaseIdsFollowReplacementAndRemoval() {
+        final RegionManager manager = new RegionManager();
+        final ProtectedCuboidRegion first = cuboid("Spawn", 0, 0, 32, 32);
+        manager.addRegion(first);
+        assertSame(first, manager.getRegion("Spawn"));
+
+        final ProtectedCuboidRegion second = cuboid("SPAWN", 0, 0, 32, 32);
+        manager.addRegion(second);
+        assertSame(second, manager.getRegion("Spawn"));
+        assertSame(second, manager.getRegion("SPAWN"));
+
+        manager.removeRegion("spawn");
+        assertNull(manager.getRegion("Spawn"));
+        assertNull(manager.getRegion("SPAWN"));
+    }
+
+    @Test
+    void aFlagSetAfterTheIndexWasBuiltIsSeen() {
+        final RegionManager manager = new RegionManager();
+        final ProtectedCuboidRegion plot = cuboid("plot", 0, 0, 32, 32);
+        manager.addRegion(plot);
+        assertFalse(manager.anyRegionUses(Flags.PVP));
+
+        plot.setFlag(Flags.PVP, State.DENY);
+
+        assertTrue(manager.anyRegionUses(Flags.PVP));
+        assertEquals(State.DENY, manager.getApplicableRegions(16, 64, 16).queryState(Flags.PVP));
+    }
+
+    @Test
+    void groupQualifiedValuesAreSkippedForSubjectsOutsideTheGroup() {
+        final RegionManager manager = new RegionManager();
+        final ProtectedCuboidRegion low = cuboid("low", 0, 0, 32, 32);
+        low.setFlag(Flags.GREETING, "everyone");
+        final ProtectedCuboidRegion high = cuboid("high", 0, 0, 32, 32);
+        high.setPriority(10);
+        high.setFlag(Flags.GREETING, "owners only");
+        high.setFlagGroup(Flags.GREETING, RegionGroup.OWNERS);
+        manager.addRegion(low);
+        manager.addRegion(high);
+
+        final ApplicableRegionSet set = manager.getApplicableRegions(16, 64, 16);
+
+        assertEquals("everyone", set.queryValue(Flags.GREETING, null));
+        assertEquals("owners only", set.queryValue(Flags.GREETING), "the subject-less form is unchanged");
+    }
+
+    @Test
     void intersectingRegionsAreFoundByBoundingBox() {
         final RegionManager manager = new RegionManager();
         manager.addRegion(cuboid("a", 0, 0, 32, 32));

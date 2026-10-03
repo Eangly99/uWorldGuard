@@ -62,7 +62,11 @@ public final class TravelListener implements Listener {
         if (EventGate.disabled(event)) {
             return;
         }
-        final Player player = ridingPlayer(event.getEntity());
+        final Entity entity = event.getEntity();
+        if (entity.isEmpty()) {
+            return;
+        }
+        final Player player = ridingPlayer(entity);
         if (player == null) {
             return;
         }

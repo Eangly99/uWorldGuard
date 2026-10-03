@@ -203,6 +203,9 @@ public final class SessionBridge extends com.sk89q.worldguard.bukkit.session.Buk
      * threading no API reaches into another region synchronously, and a task scheduled there never
      * runs, because the plugin's tasks are cancelled with it. What that leaves unreverted is the same
      * remainder {@code MovementListener.shutdown} leaves, and for the same reason.
+     *
+     * <p>The factories stay. Consumers register once and never again, so {@link #rearm} needs them to
+     * resume dispatch after an in-place disable and enable.
      */
     @Override
     public void shutdown() {
@@ -217,7 +220,6 @@ public final class SessionBridge extends com.sk89q.worldguard.bukkit.session.Buk
                     (com.sk89q.worldguard.LocalPlayer) PlayerWrapping.wrap(bukkit));
             }
         }
-        factories.clear();
     }
 
     /**
@@ -228,9 +230,33 @@ public final class SessionBridge extends com.sk89q.worldguard.bukkit.session.Buk
      * consumer that registered before an in-place disable and enable therefore had a manager that
      * still listed its factories and still answered {@code customHandlersRegistered()}, while every
      * movement gate read false and its handlers were never dispatched again.
+     *
+     * <p>Factories of plugins that disabled while uWorldGuard was down are dropped first: the
+     * disable listener that normally releases them was not running, and dispatching into a closed
+     * classloader is exactly what {@link #releaseHandlersOwnedBy} exists to prevent.
      */
     static void rearm() {
-        SessionDispatch.ACTIVE = !INSTANCE.factories.isEmpty() && WgCompatBridge.active();
+        INSTANCE.factories.removeIf(SessionBridge::ownerDisabled);
+        if (INSTANCE.factories.isEmpty()) {
+            return;
+        }
+        SessionDispatch.install(INSTANCE);
+        SessionDispatch.ACTIVE = WgCompatBridge.active();
+    }
+
+    /**
+     * Whether {@code factory} came from a plugin that is no longer enabled. A factory loaded by
+     * anything other than a plugin classloader, a shared library for example, is kept.
+     */
+    private static boolean ownerDisabled(
+        final com.sk89q.worldguard.session.handler.Handler.Factory<
+            ? extends com.sk89q.worldguard.session.handler.Handler> factory) {
+        if (!(factory.getClass().getClassLoader()
+            instanceof io.papermc.paper.plugin.provider.classloader.ConfiguredPluginClassLoader loader)) {
+            return false;
+        }
+        final org.bukkit.plugin.java.JavaPlugin owner = loader.getPlugin();
+        return owner == null || !owner.isEnabled();
     }
 
     @Override
@@ -246,6 +272,31 @@ public final class SessionBridge extends com.sk89q.worldguard.bukkit.session.Buk
             com.sk89q.worldedit.bukkit.BukkitAdapter.adapt(from),
             com.sk89q.worldedit.bukkit.BukkitAdapter.adapt(to),
             moveType(type));
+        return denied == null ? null : com.sk89q.worldedit.bukkit.BukkitAdapter.adapt(denied);
+    }
+
+    @Override
+    public org.bukkit.Location testMove(
+        final org.bukkit.entity.@NonNull Player player,
+        final org.bukkit.@NonNull Location from,
+        final org.bukkit.@NonNull Location to,
+        final SessionDispatch.@NonNull Move type,
+        final com.tricrotism.uworldguard.region.@NonNull ApplicableRegionSet fromSet,
+        final com.tricrotism.uworldguard.region.@NonNull ApplicableRegionSet toSet
+    ) {
+        final com.tricrotism.uworldguard.region.RegionManager fromWorld = WgCompatBridge.container().get(from.getWorld());
+        final com.tricrotism.uworldguard.region.RegionManager toWorld = WgCompatBridge.container().get(to.getWorld());
+        if (fromWorld == null || toWorld == null) {
+            return testMove(player, from, to, type);
+        }
+        final com.sk89q.worldguard.LocalPlayer local =
+            (com.sk89q.worldguard.LocalPlayer) PlayerWrapping.wrap(player);
+        final com.sk89q.worldedit.util.Location denied = get(local).uwgTestMoveTo(local,
+            com.sk89q.worldedit.bukkit.BukkitAdapter.adapt(from),
+            com.sk89q.worldedit.bukkit.BukkitAdapter.adapt(to),
+            moveType(type),
+            new WrappedRegionSet(fromSet, fromWorld),
+            new WrappedRegionSet(toSet, toWorld));
         return denied == null ? null : com.sk89q.worldedit.bukkit.BukkitAdapter.adapt(denied);
     }
 

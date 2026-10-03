@@ -65,7 +65,9 @@ public final class WorkbenchListener implements Listener {
         }
         if (anvil == State.DENY) {
             denied = Flags.USE_ANVIL;
-        } else if (!set.testBuild(uuid, Flags.PERMIT_WORKBENCHES)) {
+        } else if (block.getType() == Material.ENDER_CHEST
+            ? set.queryExplicitState(Flags.PERMIT_WORKBENCHES, uuid) == State.DENY
+            : !set.testBuild(uuid, Flags.PERMIT_WORKBENCHES)) {
             denied = Flags.PERMIT_WORKBENCHES;
         } else {
             return;
@@ -85,7 +87,7 @@ public final class WorkbenchListener implements Listener {
         if (!(event.getWhoClicked() instanceof Player player)) {
             return;
         }
-        final StateFlag flag = event.getInventory().getMatrix().length > 4
+        final StateFlag flag = event.getInventory().getSize() > 5
             ? Flags.PERMIT_WORKBENCHES : Flags.INVENTORY_CRAFT;
         if (!query.getApplicableRegions(player).testState(flag, player.getUniqueId())) {
             if (Bypass.has(player)) {

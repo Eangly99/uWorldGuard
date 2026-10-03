@@ -48,14 +48,38 @@ public final class ApplicableRegionSet {
         final List<ProtectedRegion> applicable, final @Nullable ProtectedRegion global,
         final @Nullable RegionManager owner, final SpatialIndex.@Nullable FlagResolver resolver
     ) {
-        if (applicable.size() > 1) {
-            applicable.sort(PRIORITY_DESC);
-        }
+        sortByPriority(applicable);
         this.applicable = applicable;
         this.global = global;
         this.owner = owner;
         this.groupsInUse = owner == null || owner.anyFlagGroups();
         this.resolver = resolver;
+    }
+
+    /**
+     * Priority descending, stable. A point is covered by a handful of regions, where an insertion
+     * sort reading priorities directly beats {@code List.sort}'s array copy and comparator calls.
+     * Larger lists still go through {@code List.sort}.
+     */
+    private static void sortByPriority(final List<ProtectedRegion> regions) {
+        final int n = regions.size();
+        if (n < 2) {
+            return;
+        }
+        if (n > 16) {
+            regions.sort(PRIORITY_DESC);
+            return;
+        }
+        for (int i = 1; i < n; i++) {
+            final ProtectedRegion region = regions.get(i);
+            final int priority = region.getPriority();
+            int j = i - 1;
+            while (j >= 0 && regions.get(j).getPriority() < priority) {
+                regions.set(j + 1, regions.get(j));
+                j--;
+            }
+            regions.set(j + 1, region);
+        }
     }
 
     /**
@@ -293,26 +317,33 @@ public final class ApplicableRegionSet {
      * unlike {@link #queryValue} the highest-priority region cannot hide the rest. Two regions that
      * must agree on a name need to read the same name from either side.
      *
+     * <p>Read-only: when a single region contributes, its own stored set is returned uncopied.
+     *
      * @return an empty set when no region here sets the flag
      */
     public <E> Set<E> flagSetUnion(final Flag<Set<E>> flag) {
         if (!worldUsesOrUnknown(flag)) {
             return Set.of();
         }
-        Set<E> merged = null;
-        for (int i = 0, n = applicable.size(); i < n; i++) {
-            final Set<E> set = applicable.get(i).getFlag(flag);
-            if (set != null) {
-                merged = merged == null ? new HashSet<>(set) : merged;
-                merged.addAll(set);
+        Set<E> union = null;
+        boolean copied = false;
+        for (int i = 0, n = applicable.size() + 1; i < n; i++) {
+            final ProtectedRegion region = i < n - 1 ? applicable.get(i) : global;
+            final Set<E> set = region == null ? null : region.getFlag(flag);
+            if (set == null || set.isEmpty()) {
+                continue;
+            }
+            if (union == null) {
+                union = set;
+            } else {
+                if (!copied) {
+                    union = new HashSet<>(union);
+                    copied = true;
+                }
+                union.addAll(set);
             }
         }
-        final Set<E> g = global != null ? global.getFlag(flag) : null;
-        if (g != null) {
-            merged = merged == null ? new HashSet<>(g) : merged;
-            merged.addAll(g);
-        }
-        return merged == null ? Set.of() : merged;
+        return union == null ? Set.of() : union;
     }
 
     /**
@@ -358,6 +389,27 @@ public final class ApplicableRegionSet {
             }
         }
         return global != null ? global.getFlag(flag) : null;
+    }
+
+    /**
+     * {@link #queryValue(Flag)} as it applies to {@code subject}: a value restricted to a
+     * {@link RegionGroup} the subject is not in is skipped, and the next region down answers.
+     */
+    public <T> @Nullable T queryValue(final Flag<T> flag, final @Nullable UUID subject) {
+        if (!groupsInUse) {
+            return queryValue(flag);
+        }
+        if (!worldUsesOrUnknown(flag)) {
+            return null;
+        }
+        for (int i = 0, n = applicable.size(); i < n; i++) {
+            final ProtectedRegion region = applicable.get(i);
+            final T v = appliesTo(region, flag, subject) ? region.getFlag(flag) : null;
+            if (v != null) {
+                return v;
+            }
+        }
+        return global != null && appliesTo(global, flag, subject) ? global.getFlag(flag) : null;
     }
 
     /**

@@ -27,6 +27,8 @@ import org.bukkit.event.vehicle.VehicleEnterEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.jspecify.annotations.NullMarked;
 
+import java.util.EnumSet;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -36,6 +38,12 @@ import java.util.UUID;
 @NullMarked
 public final class PlayerStateListener implements Listener {
 
+    /**
+     * Every block whose state is a {@link Container}, so chest-access is decided from the type alone
+     * without building a block state. Built from the {@code Container} subtypes: barrel, brewing stand, chest,
+     * crafter, dispenser, dropper, the furnaces, hopper and shulker box. Copper chests are chests.
+     */
+    private static final Set<Material> CONTAINERS = containers();
 
     private final RegionQuery query;
     private final MessageService messages;
@@ -43,6 +51,19 @@ public final class PlayerStateListener implements Listener {
     public PlayerStateListener(final RegionQuery query, final MessageService messages) {
         this.query = query;
         this.messages = messages;
+    }
+
+    private static Set<Material> containers() {
+        final EnumSet<Material> set = EnumSet.of(Material.CHEST, Material.TRAPPED_CHEST, Material.BARREL,
+            Material.BREWING_STAND, Material.CRAFTER, Material.DISPENSER, Material.DROPPER,
+            Material.FURNACE, Material.BLAST_FURNACE, Material.SMOKER, Material.HOPPER);
+        for (final Material material : Material.values()) {
+            final String name = material.name();
+            if (!material.isLegacy() && (name.endsWith("SHULKER_BOX") || name.endsWith("COPPER_CHEST"))) {
+                set.add(material);
+            }
+        }
+        return set;
     }
 
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
@@ -170,7 +191,8 @@ public final class PlayerStateListener implements Listener {
             return;
         }
         final Player player = event.getPlayer();
-        if (block.getType() == Material.RESPAWN_ANCHOR) {
+        final Material type = block.getType();
+        if (type == Material.RESPAWN_ANCHOR) {
             final ApplicableRegionSet anchorSet = query.getApplicableRegions(block);
             if (!anchorSet.testBuild(player.getUniqueId(), Flags.RESPAWN_ANCHORS) && !Bypass.has(player)) {
                 event.setCancelled(true);
@@ -178,7 +200,7 @@ public final class PlayerStateListener implements Listener {
             }
             return;
         }
-        if (!(block.getState(false) instanceof Container)) {
+        if (!CONTAINERS.contains(type)) {
             return;
         }
         final ApplicableRegionSet set = query.getApplicableRegions(block);

@@ -25,7 +25,7 @@ import org.bukkit.OfflinePlayer;
 import org.bukkit.World;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
-import org.incendo.cloud.annotation.specifier.Greedy;
+import org.incendo.cloud.annotation.specifier.FlagYielding;
 import org.incendo.cloud.annotations.*;
 import org.incendo.cloud.annotations.suggestion.Suggestions;
 import org.incendo.cloud.component.CommandComponent;
@@ -517,8 +517,13 @@ public final class RegionCommands {
     @Command("uworldguard|uwg|worldguard|wg|region|regions|rg remove <id>")
     @CommandDescription("Remove a region")
     @Permission("uworldguard.region.remove")
-    public void remove(final Source sender, @Argument(value = "id", suggestions = "region-ids") final String id) {
-        final RegionEditor editor = editorFor(sender);
+    public void remove(
+        final Source sender,
+        @Argument(value = "id", suggestions = "region-ids") final String id,
+        @org.incendo.cloud.annotations.Flag(value = "world", aliases = "w",
+            suggestions = "worlds") final @Nullable String worldName
+    ) {
+        final RegionEditor editor = editorFor(sender, worldName);
         if (editor == null) return;
 
         switch (editor.remove(id, sender.source())) {
@@ -538,10 +543,18 @@ public final class RegionCommands {
     @Command("uworldguard|uwg|worldguard|wg|region|regions|rg list [page]")
     @CommandDescription("List regions in this world, a page at a time")
     @Permission("uworldguard.region.list")
-    public void list(final Source sender, @Argument("page") final @Nullable Integer pageArg) {
+    public void list(
+        final Source sender,
+        @Argument("page") final @Nullable Integer pageArg,
+        @org.incendo.cloud.annotations.Flag(value = "world", aliases = "w",
+            suggestions = "worlds") final @Nullable String worldName
+    ) {
         final int page = pageArg == null ? 1 : pageArg;
-        final RegionManager regionManager = managerFor(sender);
+        final World world = worldFor(sender, worldName);
+        if (world == null) return;
+        final RegionManager regionManager = managerIn(sender, world);
         if (regionManager == null) return;
+        final String elsewhere = worldName == null ? "" : " -w " + world.getName();
 
         if (regionManager.size() == 0) {
             note(sender, "No regions in this world yet. Make a selection, then run /uwg define <name>.");
@@ -557,7 +570,7 @@ public final class RegionCommands {
         final int to = Math.min(from + PAGE_SIZE, regions.size());
 
         Component message = CommandText.header(regions.size()
-                + (regions.size() == 1 ? " region in " : " regions in ") + world(sender))
+                + (regions.size() == 1 ? " region in " : " regions in ") + world.getName())
             .append(Component.text("   page " + index + "/" + pages, CommandText.PUNCTUATION));
 
         for (int i = from; i < to; i++) {
@@ -571,12 +584,12 @@ public final class RegionCommands {
                             + ", " + (region.getOwners().size() + region.getMembers().size()) + " trusted",
                         CommandText.DESCRIPTION))
                     .build(),
-                "/uwg info " + region.getId(),
+                "/uwg info " + region.getId() + elsewhere,
                 "Click for details about " + region.getId()));
         }
 
         if (pages > 1) {
-            message = message.append(Component.newline()).append(pager(index, pages));
+            message = message.append(Component.newline()).append(pager(index, pages, elsewhere));
         }
         sender.source().sendMessage(message);
     }
@@ -585,14 +598,14 @@ public final class RegionCommands {
      * Previous/next controls for a paged listing. Both stay in place when unavailable but render dim
      * and inert, so the row does not jump around as you page through it.
      */
-    private static Component pager(final int page, final int pages) {
+    private static Component pager(final int page, final int pages, final String elsewhere) {
         final Component previous = page > 1
             ? CommandText.runnable(Component.text("‹ prev", CommandText.LITERAL),
-            "/uwg list " + (page - 1), "Page " + (page - 1))
+            "/uwg list " + (page - 1) + elsewhere, "Page " + (page - 1))
             : Component.text("‹ prev", CommandText.PUNCTUATION);
         final Component next = page < pages
             ? CommandText.runnable(Component.text("next ›", CommandText.LITERAL),
-            "/uwg list " + (page + 1), "Page " + (page + 1))
+            "/uwg list " + (page + 1) + elsewhere, "Page " + (page + 1))
             : Component.text("next ›", CommandText.PUNCTUATION);
         return Component.text()
             .append(Component.text("  ", CommandText.DESCRIPTION))
@@ -600,10 +613,6 @@ public final class RegionCommands {
             .append(Component.text("   ·   ", CommandText.PUNCTUATION))
             .append(next)
             .build();
-    }
-
-    private static String world(final Source sender) {
-        return sender.source() instanceof Player player ? player.getWorld().getName() : "this world";
     }
 
     @Command("uworldguard|uwg|worldguard|wg|region|regions|rg here")
@@ -674,7 +683,7 @@ public final class RegionCommands {
         final Player player = asPlayer(sender);
         if (player == null) return;
 
-        final RegionManager regionManager = managerFor(sender);
+        final RegionManager regionManager = managerFor(sender, null);
         if (regionManager == null) return;
 
         final ProtectedRegion region = regionManager.getRegion(id);
@@ -712,7 +721,7 @@ public final class RegionCommands {
         final Player player = asPlayer(sender);
         if (player == null) return;
 
-        final RegionManager regionManager = managerFor(sender);
+        final RegionManager regionManager = managerFor(sender, null);
         if (regionManager == null) return;
 
         final ProtectedRegion region = regionManager.getRegion(id);
@@ -760,8 +769,13 @@ public final class RegionCommands {
     @Command("uworldguard|uwg|worldguard|wg|region|regions|rg info <id>")
     @CommandDescription("Show details about a region")
     @Permission("uworldguard.region.info")
-    public void info(final Source sender, @Argument(value = "id", suggestions = "region-ids") final String id) {
-        final RegionManager regionManager = managerFor(sender);
+    public void info(
+        final Source sender,
+        @Argument(value = "id", suggestions = "region-ids") final String id,
+        @org.incendo.cloud.annotations.Flag(value = "world", aliases = "w",
+            suggestions = "worlds") final @Nullable String worldName
+    ) {
+        final RegionManager regionManager = managerFor(sender, worldName);
         if (regionManager == null) return;
 
         final ProtectedRegion region = regionManager.getRegion(id);
@@ -782,7 +796,8 @@ public final class RegionCommands {
             .append(CommandText.field("Parent", parent == null
                 ? Component.text("none", CommandText.PUNCTUATION)
                 : CommandText.runnable(Component.text(parent.getId(), CommandText.REGION),
-                "/uwg info " + parent.getId(), "Click for details about " + parent.getId())))
+                "/uwg info " + parent.getId() + (worldName == null ? "" : " -w " + worldName),
+                "Click for details about " + parent.getId())))
             .append(Component.newline())
             .append(CommandText.field("Owners", trusted(region.getOwners())))
             .append(Component.newline())
@@ -807,11 +822,13 @@ public final class RegionCommands {
         @Argument(value = "flag", suggestions = "flags") final String flagName,
         @org.incendo.cloud.annotations.Flag(value = "group", aliases = "g",
             suggestions = "flag-groups") final @Nullable String groupName,
-        @Argument(value = "value", suggestions = "flag-values") @Greedy final @Nullable String value
+        @org.incendo.cloud.annotations.Flag(value = "world", aliases = "w",
+            suggestions = "worlds") final @Nullable String worldName,
+        @Argument(value = "value", suggestions = "flag-values") @FlagYielding final @Nullable String value
     ) {
-        final RegionEditor editor = editorFor(sender);
+        final RegionEditor editor = editorFor(sender, worldName);
         if (editor == null) return;
-        final Player player = (Player) sender.source();
+        final Player player = sender.source() instanceof Player online ? online : null;
 
         final ProtectedRegion region = editor.manager().getRegion(id);
         if (region == null) {
@@ -899,9 +916,11 @@ public final class RegionCommands {
     public void priority(
         final Source sender,
         @Argument(value = "id", suggestions = "region-ids") final String id,
-        @Argument("priority") final @Nullable Integer priority
+        @Argument("priority") final @Nullable Integer priority,
+        @org.incendo.cloud.annotations.Flag(value = "world", aliases = "w",
+            suggestions = "worlds") final @Nullable String worldName
     ) {
-        final RegionEditor editor = editorFor(sender);
+        final RegionEditor editor = editorFor(sender, worldName);
         if (editor == null) return;
 
         if (id.indexOf('>') >= 0) {
@@ -1010,7 +1029,7 @@ public final class RegionCommands {
         final Player player = asPlayer(sender);
         if (player == null) return;
 
-        final RegionEditor editor = editorFor(sender);
+        final RegionEditor editor = editorFor(sender, null);
         if (editor == null) return;
 
         PriorityDialog.open(player, editor.manager(), (viewer, chain) -> {
@@ -1028,9 +1047,11 @@ public final class RegionCommands {
     public void setParent(
         final Source sender,
         @Argument(value = "id", suggestions = "region-ids") final String id,
-        @Argument(value = "parent", suggestions = "region-ids") final @Nullable String parentId
+        @Argument(value = "parent", suggestions = "region-ids") final @Nullable String parentId,
+        @org.incendo.cloud.annotations.Flag(value = "world", aliases = "w",
+            suggestions = "worlds") final @Nullable String worldName
     ) {
-        final RegionEditor editor = editorFor(sender);
+        final RegionEditor editor = editorFor(sender, worldName);
         if (editor == null) return;
 
         final ProtectedRegion region = editor.manager().getRegion(id);
@@ -1067,9 +1088,11 @@ public final class RegionCommands {
     @Permission("uworldguard.region.setparent")
     public void removeParent(
         final Source sender,
-        @Argument(value = "id", suggestions = "region-ids") final String id
+        @Argument(value = "id", suggestions = "region-ids") final String id,
+        @org.incendo.cloud.annotations.Flag(value = "world", aliases = "w",
+            suggestions = "worlds") final @Nullable String worldName
     ) {
-        final RegionEditor editor = editorFor(sender);
+        final RegionEditor editor = editorFor(sender, worldName);
         if (editor == null) return;
 
         final ProtectedRegion region = editor.manager().getRegion(id);
@@ -1141,7 +1164,7 @@ public final class RegionCommands {
             return;
         }
 
-        new FlagMenu(player.getWorld(), regionManager, region, chatInput).open(player);
+        new FlagMenu(player.getWorld(), regionManager, region, chatInput, null).open(player);
     }
 
     @Command("uworldguard|uwg|worldguard|wg|region|regions|rg owner add <id> <player>")
@@ -1151,9 +1174,11 @@ public final class RegionCommands {
     public void addOwner(
         final Source sender,
         @Argument(value = "id", suggestions = "region-ids") final String id,
-        @Argument(value = "player", suggestions = "players") final String playerName
+        @Argument(value = "player", suggestions = "players") final String playerName,
+        @org.incendo.cloud.annotations.Flag(value = "world", aliases = "w",
+            suggestions = "worlds") final @Nullable String worldName
     ) {
-        member(sender, id, playerName, true, true);
+        member(sender, worldName, id, playerName, true, true);
     }
 
     @Command("uworldguard|uwg|worldguard|wg|region|regions|rg owner remove <id> <player>")
@@ -1163,9 +1188,11 @@ public final class RegionCommands {
     public void removeOwner(
         final Source sender,
         @Argument(value = "id", suggestions = "region-ids") final String id,
-        @Argument(value = "player", suggestions = "players") final String playerName
+        @Argument(value = "player", suggestions = "players") final String playerName,
+        @org.incendo.cloud.annotations.Flag(value = "world", aliases = "w",
+            suggestions = "worlds") final @Nullable String worldName
     ) {
-        member(sender, id, playerName, true, false);
+        member(sender, worldName, id, playerName, true, false);
     }
 
     @Command("uworldguard|uwg|worldguard|wg|region|regions|rg member add <id> <player>")
@@ -1175,9 +1202,11 @@ public final class RegionCommands {
     public void addMember(
         final Source sender,
         @Argument(value = "id", suggestions = "region-ids") final String id,
-        @Argument(value = "player", suggestions = "players") final String playerName
+        @Argument(value = "player", suggestions = "players") final String playerName,
+        @org.incendo.cloud.annotations.Flag(value = "world", aliases = "w",
+            suggestions = "worlds") final @Nullable String worldName
     ) {
-        member(sender, id, playerName, false, true);
+        member(sender, worldName, id, playerName, false, true);
     }
 
     @Command("uworldguard|uwg|worldguard|wg|region|regions|rg member remove <id> <player>")
@@ -1187,15 +1216,18 @@ public final class RegionCommands {
     public void removeMember(
         final Source sender,
         @Argument(value = "id", suggestions = "region-ids") final String id,
-        @Argument(value = "player", suggestions = "players") final String playerName
+        @Argument(value = "player", suggestions = "players") final String playerName,
+        @org.incendo.cloud.annotations.Flag(value = "world", aliases = "w",
+            suggestions = "worlds") final @Nullable String worldName
     ) {
-        member(sender, id, playerName, false, false);
+        member(sender, worldName, id, playerName, false, false);
     }
 
     private void member(
-        final Source sender, final String id, final String playerName, final boolean owner, final boolean add
+        final Source sender, final @Nullable String worldName, final String id, final String playerName,
+        final boolean owner, final boolean add
     ) {
-        final RegionEditor editor = editorFor(sender);
+        final RegionEditor editor = editorFor(sender, worldName);
         if (editor == null) return;
 
         final ProtectedRegion region = editor.manager().getRegion(id);
@@ -1207,7 +1239,7 @@ public final class RegionCommands {
             owner ? RegionMembershipChangeEvent.Role.OWNER : RegionMembershipChangeEvent.Role.MEMBER;
 
         if (playerName.regionMatches(true, 0, GROUP_PREFIX, 0, GROUP_PREFIX.length())) {
-            group(sender, editor.manager(), region, playerName.substring(GROUP_PREFIX.length()), owner, add);
+            group(sender, editor, region, playerName.substring(GROUP_PREFIX.length()), role, add);
             return;
         }
 
@@ -1257,24 +1289,25 @@ public final class RegionCommands {
      * the offline-player detour the uuid path needs.
      */
     private void group(
-        final Source sender, final RegionManager regionManager, final ProtectedRegion region,
-        final String name, final boolean owner, final boolean add
+        final Source sender, final RegionEditor editor, final ProtectedRegion region,
+        final String name, final RegionMembershipChangeEvent.Role role, final boolean add
     ) {
         if (name.isBlank()) {
             error(sender, "Name a group after <aqua>g:</aqua>, for example <aqua>g:staff</aqua>.");
             return;
         }
 
-        final DefaultDomain domain = owner ? region.getOwners() : region.getMembers();
-        if (add) {
-            domain.addGroup(name);
-        } else {
-            domain.removeGroup(name);
+        final EditResult result = new RegionEditorImpl(editor.world(), editor.manager())
+            .setGroupTrusted(region, role, name, add, sender.source());
+        if (result == EditResult.NOT_FOUND) {
+            error(sender, "No region named <aqua><id></aqua>.", Placeholder.unparsed("id", region.getId()));
+            return;
         }
-
-        regionManager.markDirty();
+        if (result == EditResult.CANCELLED) {
+            return;
+        }
         success(sender, (add ? "Added everyone in <aqua><group></aqua> to " : "Removed <aqua><group></aqua> from ")
-                + (owner ? "owners" : "members") + " of <aqua><id></aqua>.",
+                + (role == RegionMembershipChangeEvent.Role.OWNER ? "owners" : "members") + " of <aqua><id></aqua>.",
             Placeholder.unparsed("group", name),
             Placeholder.unparsed("id", region.getId()));
     }
@@ -1333,11 +1366,76 @@ public final class RegionCommands {
      * suggestion is a shaped example rather than nothing, so the expected format is discoverable from
      * the command line instead of only from the menu's "Accepts:" line.
      */
+    /**
+     * The region's current value first, so editing a list means appending rather than retyping it,
+     * then, for list flags, completions for the entry being typed after the last comma, then examples.
+     */
     @Suggestions("flag-values")
     public List<String> suggestFlagValues(final CommandContext<Source> ctx, final String input) {
         final Flag<?> flag = Flags.get(ctx.getOrDefault("flag", ""));
         if (flag == null) return List.of();
 
+        final List<String> suggestions = new ArrayList<>();
+        final boolean list = flag instanceof MaterialSetFlag || flag instanceof EntityTypeSetFlag
+            || flag instanceof StringSetFlag || flag instanceof PotionEffectSetFlag;
+        final String current = currentValue(ctx, flag);
+        if (current != null) {
+            suggestions.add(current);
+            if (list) {
+                suggestions.add(current + ",");
+            }
+        }
+        if (flag instanceof MaterialSetFlag) {
+            completeEntry(input, MATERIAL_NAMES, suggestions);
+        } else if (flag instanceof EntityTypeSetFlag) {
+            completeEntry(input, ENTITY_NAMES, suggestions);
+        }
+        suggestions.addAll(exampleValues(flag));
+        return suggestions;
+    }
+
+    /**
+     * {@code flag}'s value on the region named in the command, written the way the command accepts
+     * it, or {@code null} when the region does not set it.
+     */
+    private @Nullable String currentValue(final CommandContext<Source> ctx, final Flag<?> flag) {
+        if (!(ctx.sender().source() instanceof Player player)) {
+            return null;
+        }
+        final RegionManager regionManager = container.get(player.getWorld());
+        final ProtectedRegion region = regionManager == null ? null : regionManager.getRegion(ctx.getOrDefault("id", ""));
+        final Object value = region == null ? null : region.getFlags().get(flag);
+        return value == null ? null : inputOf(flag, value);
+    }
+
+    /**
+     * A region's stored value for {@code flag} is always that flag's own type, so the cast holds.
+     */
+    @SuppressWarnings("unchecked")
+    private static String inputOf(final Flag<?> flag, final Object value) {
+        return ((Flag<Object>) flag).toInput(value);
+    }
+
+    /**
+     * Completes the entry after the last comma in {@code input} against {@code names}, keeping
+     * everything before it, so {@code DIRT,GRASS_BLOCK,STO} offers {@code DIRT,GRASS_BLOCK,STONE}.
+     */
+    private static void completeEntry(final String input, final List<String> names, final List<String> into) {
+        final int comma = input.lastIndexOf(',');
+        final String before = input.substring(0, comma + 1);
+        final String typed = input.substring(comma + 1).trim();
+        int added = 0;
+        for (final String name : names) {
+            if (name.regionMatches(true, 0, typed, 0, typed.length())) {
+                into.add(before + name);
+                if (++added == MAX_ENTRY_COMPLETIONS) {
+                    return;
+                }
+            }
+        }
+    }
+
+    private static List<String> exampleValues(final Flag<?> flag) {
         final List<String> declared = flag.getValueSuggestions();
         if (!declared.isEmpty()) return declared;
 
@@ -1357,6 +1455,37 @@ public final class RegionCommands {
     }
 
     /**
+     * Cap on list-entry completions per keystroke. A single letter matches hundreds of materials,
+     * and the client only shows a screenful anyway.
+     */
+    private static final int MAX_ENTRY_COMPLETIONS = 64;
+
+    private static final List<String> MATERIAL_NAMES = materialNames();
+    private static final List<String> ENTITY_NAMES = entityNames();
+
+    @SuppressWarnings("deprecation")
+    private static List<String> materialNames() {
+        final List<String> names = new ArrayList<>();
+        for (final org.bukkit.Material material : org.bukkit.Material.values()) {
+            if (!material.isLegacy()) {
+                names.add(material.name());
+            }
+        }
+        return List.copyOf(names);
+    }
+
+    private static List<String> entityNames() {
+        final List<String> names = new ArrayList<>();
+        for (final org.bukkit.entity.EntityType type : org.bukkit.entity.EntityType.values()) {
+            if (type != org.bukkit.entity.EntityType.UNKNOWN) {
+                names.add(type.getKey().getKey());
+            }
+        }
+        names.sort(null);
+        return List.copyOf(names);
+    }
+
+    /**
      * Stores a value parsed from a {@code Flag<?>}, whose type the command line cannot know. The
      * parse came from that same flag, so the cast holds. {@code group} of {@code null} keeps the
      * group the flag already had.
@@ -1372,23 +1501,53 @@ public final class RegionCommands {
             : editor.setFlag(region, typed, value, group, actor);
     }
 
-    /**
-     * The editor for the sender's world, reporting why there is none the same way
-     * {@link #managerFor} does.
-     */
-    private @Nullable RegionEditor editorFor(final Source sender) {
-        final RegionManager regionManager = managerFor(sender);
-        if (regionManager == null) {
-            return null;
+    @Suggestions("worlds")
+    public List<String> suggestWorlds(final CommandContext<Source> ctx, final String input) {
+        final List<String> names = new ArrayList<>();
+        for (final World world : Bukkit.getWorlds()) {
+            names.add(world.getName());
         }
-        return new RegionEditorImpl(((Player) sender.source()).getWorld(), regionManager);
+        return names;
     }
 
-    private @Nullable RegionManager managerFor(final Source sender) {
-        final Player player = asPlayer(sender);
-        if (player == null) return null;
+    /**
+     * The world a command acts on: the one named with {@code -w}, otherwise the one the player is
+     * in. The console has no world of its own, so it has to name one.
+     */
+    private @Nullable World worldFor(final Source sender, final @Nullable String worldName) {
+        if (worldName != null) {
+            final World world = Bukkit.getWorld(worldName);
+            if (world == null) {
+                error(sender, "No world named <aqua><world></aqua>.", Placeholder.unparsed("world", worldName));
+            }
+            return world;
+        }
+        if (sender.source() instanceof Player player) {
+            return player.getWorld();
+        }
+        error(sender, "Name the world from the console, like <aqua>-w world</aqua> at the end.");
+        return null;
+    }
 
-        final RegionManager regionManager = container.get(player.getWorld());
+    /**
+     * The editor for {@link #worldFor}'s world, reporting why there is none the same way
+     * {@link #managerIn} does.
+     */
+    private @Nullable RegionEditor editorFor(final Source sender, final @Nullable String worldName) {
+        final World world = worldFor(sender, worldName);
+        if (world == null) return null;
+
+        final RegionManager regionManager = managerIn(sender, world);
+        return regionManager == null ? null : new RegionEditorImpl(world, regionManager);
+    }
+
+    private @Nullable RegionManager managerFor(final Source sender, final @Nullable String worldName) {
+        final World world = worldFor(sender, worldName);
+        return world == null ? null : managerIn(sender, world);
+    }
+
+    private @Nullable RegionManager managerIn(final Source sender, final World world) {
+        final RegionManager regionManager = container.get(world);
         if (regionManager == null) {
             error(sender, "Regions are not loaded for this world.");
         }

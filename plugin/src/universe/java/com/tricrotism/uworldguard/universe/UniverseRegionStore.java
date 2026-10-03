@@ -5,10 +5,7 @@ import com.tricrotism.uworldguard.flags.Flag;
 import com.tricrotism.uworldguard.flags.RegionGroup;
 import com.tricrotism.uworldguard.flags.State;
 import com.tricrotism.uworldguard.flags.StateFlag;
-import com.tricrotism.uworldguard.region.GlobalProtectedRegion;
-import com.tricrotism.uworldguard.region.ProtectedRegion;
-import com.tricrotism.uworldguard.region.RegionManager;
-import com.tricrotism.uworldguard.region.SpatialIndex;
+import com.tricrotism.uworldguard.region.*;
 import com.tricrotism.uworldguard.storage.RegionStore;
 import com.tricrotism.uworldguard.util.BlockVector3;
 import com.universeprojects.api.region.*;
@@ -56,6 +53,7 @@ public final class UniverseRegionStore implements RegionStore, RegionLifecycleLi
 
     private static final int MAX_IN_FLIGHT = 8;
 
+    private final Plugin plugin;
     private final RegionService service;
     private final RegionStore legacy;
     private final UniverseRegions codec;
@@ -66,7 +64,18 @@ public final class UniverseRegionStore implements RegionStore, RegionLifecycleLi
     private final ThreadLocal<Collector> collectors = ThreadLocal.withInitial(Collector::new);
     private final Map<String, Deque<RegionDefinition>> inFlight = new ConcurrentHashMap<>();
     private final Set<String> unsaved = ConcurrentHashMap.newKeySet();
+    /**
+     * What uSpigot holds for each region, in the form our copy would write. Recorded from our
+     * conversion rather than from uSpigot's definition: anything the conversion could not carry
+     * would otherwise read as an edit, and the next save would write the stripped region over
+     * uSpigot's copy.
+     */
     private final Map<String, RegionDefinition> lastSaved = new ConcurrentHashMap<>();
+    /**
+     * Set while {@link #apply} adds a region uSpigot already holds, so the index does not queue it
+     * straight back to uSpigot as an edit of ours.
+     */
+    private final ThreadLocal<Boolean> applyingExternal = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private final Map<String, Set<String>> pendingDeletes = new ConcurrentHashMap<>();
     private final Set<String> unsavableIds = ConcurrentHashMap.newKeySet();
     private final Set<String> brokenMirrors = ConcurrentHashMap.newKeySet();
@@ -83,6 +92,7 @@ public final class UniverseRegionStore implements RegionStore, RegionLifecycleLi
         final Plugin plugin, final RegionService service, final RegionStore legacy,
         final Path migratedFile, final Set<String> migrated
     ) {
+        this.plugin = plugin;
         this.service = service;
         this.legacy = legacy;
         this.log = plugin.getLogger();
@@ -117,7 +127,7 @@ public final class UniverseRegionStore implements RegionStore, RegionLifecycleLi
             final ProtectedRegion converted = codec.toProtected(region, manager);
             if (converted != null) {
                 manager.addRegion(converted);
-                lastSaved.put(key(worldName, region.id()), codec.definitionOf(region));
+                lastSaved.put(key(worldName, region.id()), codec.definition(worldName, converted));
             }
         }
         if (!migrated.contains(worldName)) {
@@ -253,6 +263,10 @@ public final class UniverseRegionStore implements RegionStore, RegionLifecycleLi
      * just published.
      */
     private void writeUniverse(final String world, final RegionManager manager) {
+        final WorldIndex index = indexes.get(world);
+        if (index != null) {
+            index.flush();
+        }
         final String prefix = world + ":";
         final List<String> saving = new ArrayList<>();
         unsaved.removeIf(key -> key.startsWith(prefix) && saving.add(key));
@@ -288,9 +302,12 @@ public final class UniverseRegionStore implements RegionStore, RegionLifecycleLi
                 lastSaved.put(key(world, definition.id()), definition);
             }
         }
-        for (final ProtectedRegion region : manager.getRegions()) {
-            if (unsaved.contains(key(world, region.getId())) && storable(region)) {
-                publish(world, region);
+        for (final String key : unsaved) {
+            if (key.startsWith(prefix)) {
+                final ProtectedRegion region = manager.getRegion(key.substring(prefix.length()));
+                if (region != null && storable(region)) {
+                    republish(world, region);
+                }
             }
         }
 
@@ -298,12 +315,20 @@ public final class UniverseRegionStore implements RegionStore, RegionLifecycleLi
         if (deletes == null) {
             return;
         }
+        final List<String> gone = new ArrayList<>(deletes.size());
+        for (final String id : deletes) {
+            final ProtectedRegion held = manager.getRegion(id);
+            if (held == null || !storable(held)) {
+                gone.add(id);
+            }
+        }
+        if (gone.isEmpty()) {
+            return;
+        }
         try {
-            for (final String id : deletes) {
-                if (!manager.hasRegion(id)) {
-                    service.delete(world, id, RemovalStrategy.UNSET_PARENT);
-                    lastSaved.remove(key(world, id));
-                }
+            service.deleteAll(world, gone, RemovalStrategy.UNSET_PARENT);
+            for (final String id : gone) {
+                lastSaved.remove(key(world, id));
             }
         } catch (final RuntimeException e) {
             pendingDeletes.computeIfAbsent(world, _ -> ConcurrentHashMap.newKeySet()).addAll(deletes);
@@ -318,6 +343,19 @@ public final class UniverseRegionStore implements RegionStore, RegionLifecycleLi
         expectEcho(world, definition);
         service.put(definition.toRegion());
         changed(world);
+    }
+
+    /**
+     * Queues {@code region} on its world's index, so it goes out with the tick's other edits, or
+     * publishes it directly when the world has no index.
+     */
+    private void republish(final String world, final ProtectedRegion region) {
+        final WorldIndex index = indexes.get(world);
+        if (index != null) {
+            index.queue(region.getId(), region);
+        } else {
+            publish(world, region);
+        }
     }
 
     private void expectEcho(final String world, final RegionDefinition definition) {
@@ -396,7 +434,10 @@ public final class UniverseRegionStore implements RegionStore, RegionLifecycleLi
     @Override
     public void unload(final String worldName) {
         managers.remove(worldName);
-        indexes.remove(worldName);
+        final WorldIndex index = indexes.remove(worldName);
+        if (index != null) {
+            index.flush();
+        }
         final String prefix = worldName + ":";
         inFlight.keySet().removeIf(key -> key.startsWith(prefix));
         lastSaved.keySet().removeIf(key -> key.startsWith(prefix));
@@ -405,6 +446,9 @@ public final class UniverseRegionStore implements RegionStore, RegionLifecycleLi
 
     @Override
     public void close() {
+        for (final WorldIndex index : indexes.values()) {
+            index.flush();
+        }
         service.events().removeListener(this);
         managers.clear();
         indexes.clear();
@@ -434,6 +478,11 @@ public final class UniverseRegionStore implements RegionStore, RegionLifecycleLi
         changed(world);
         final RegionManager manager = managers.get(world);
         if (manager == null) {
+            return;
+        }
+        final ProtectedRegion held = manager.getRegion(id);
+        if (held == null || !storable(held)) {
+            // uSpigot cannot hold ours, so this is our retraction of an older copy
             return;
         }
         final ProtectedRegion removed = manager.removeRegion(id);
@@ -467,7 +516,7 @@ public final class UniverseRegionStore implements RegionStore, RegionLifecycleLi
             for (final ProtectedRegion ours : manager.getRegions()) {
                 final String id = ours.getId().toLowerCase(Locale.ROOT);
                 if ((unsaved.contains(key(world, id)) || !held.contains(id)) && storable(ours)) {
-                    publish(world, ours);
+                    republish(world, ours);
                 }
             }
         }
@@ -492,8 +541,13 @@ public final class UniverseRegionStore implements RegionStore, RegionLifecycleLi
         if (converted == null) {
             return;
         }
-        manager.addRegion(converted);
-        lastSaved.put(key(world, region.id()), incoming);
+        applyingExternal.set(Boolean.TRUE);
+        try {
+            manager.addRegion(converted);
+        } finally {
+            applyingExternal.set(Boolean.FALSE);
+        }
+        lastSaved.put(key(world, region.id()), codec.definition(world, converted));
         if (ours == null) {
             report(world, region.id(), RegionExternalChangeEvent.Kind.CREATED, null, converted, List.of());
         } else {
@@ -586,18 +640,79 @@ public final class UniverseRegionStore implements RegionStore, RegionLifecycleLi
      * Anywhere else, and in a world holding regions uSpigot cannot store or with group qualifiers on
      * the global region, the manager resolves from our own copy.
      *
-     * <p>Structural and flag edits go straight into the registry instead of waiting for a save: the
-     * index is the only thing queries read, so a region defined and not yet pushed would stand
-     * unprotected. Regions uSpigot cannot hold (non-ASCII ids) are kept in a side list checked on
-     * every lookup for the same reason.
+     * <p>Structural and flag edits reach the registry on the next tick instead of waiting for a save,
+     * gathered into one {@code putAll} and one {@code removeAll}. uSpigot rebuilds its inheritance
+     * index on every single {@code put}, so a bulk edit sent one region at a time cost O(n) per region.
+     * Until a queued edit is sent, every lookup merges the queued regions in and resolves flags from
+     * our own copy, so a region defined and not yet pushed is never unprotected. Regions uSpigot
+     * cannot hold (non-ASCII ids) are kept in a side list checked on every lookup for the same reason.
      */
     private final class WorldIndex implements SpatialIndex {
 
         private static final ProtectedRegion[] NONE = new ProtectedRegion[0];
 
+        /**
+         * Bounds for how many edits one flush sends. uSpigot's {@code putAll} and {@code removeAll}
+         * cost more per region as the batch grows, and much more when a removal unparents children:
+         * on DevSpace at 5k regions, 2 batches of 2,500 took 205 ms with one 126 ms tick, while a
+         * fixed 256 still let a parent-heavy {@code removeAll} take 66 ms.
+         */
+        private static final int MIN_BATCH = 16;
+        private static final int MAX_BATCH = 256;
+
+        /**
+         * What one flush aims to spend in uSpigot. The batch size follows the last flush's cost,
+         * halving toward this when a flush runs over and doubling back while flushes stay under.
+         */
+        private static final long TARGET_FLUSH_NANOS = 4_000_000L;
+
+        /**
+         * Edits the next flush sends. Only read and written inside {@link #sendBatch}, which is
+         * synchronized.
+         */
+        private int batchSize = MAX_BATCH;
+
+        /**
+         * A queued registry edit: {@code region} to publish, or {@code null} to remove.
+         *
+         * <p>Equal only to itself. A flag edit re-queues the same region instance, and a record would
+         * compare that new entry equal to the one a flush is sending, so the flush's conditional
+         * remove dropped the edit made while it ran.
+         */
+        private static final class Pending {
+
+            private final @Nullable ProtectedRegion region;
+
+            Pending(final @Nullable ProtectedRegion region) {
+                this.region = region;
+            }
+
+            @Nullable ProtectedRegion region() {
+                return region;
+            }
+        }
+
+        /**
+         * What lookups read of the queue, rebuilt only when {@link #pendingVersion} has moved.
+         */
+        private record PendingView(long version, ProtectedRegion[] puts, boolean empty) {}
+
         private final String world;
         private final RegionManager manager;
         private volatile ProtectedRegion[] unindexable;
+        /**
+         * Lower-case ids of stored regions that are not cuboids. While empty, point lookups use uSpigot's
+         * point query, whose containment provably matches ours.
+         */
+        private final Set<String> shaped = ConcurrentHashMap.newKeySet();
+        /**
+         * Keyed by lower-case id, so a region edited twice in a tick is sent once. An entry leaves only
+         * after uSpigot has accepted it, and only if it was not queued again meanwhile.
+         */
+        private final Map<String, Pending> pending = new ConcurrentHashMap<>();
+        private final AtomicLong pendingVersion = new AtomicLong();
+        private volatile PendingView pendingView = new PendingView(0L, NONE, true);
+        private final java.util.concurrent.atomic.AtomicBoolean flushQueued = new java.util.concurrent.atomic.AtomicBoolean();
         /**
          * uSpigot may not apply our group check to its world defaults, so a grouped global region
          * keeps resolution on our side.
@@ -631,6 +746,8 @@ public final class UniverseRegionStore implements RegionStore, RegionLifecycleLi
             for (final ProtectedRegion region : manager.getRegions()) {
                 if (!storable(region)) {
                     invalid.add(region);
+                } else {
+                    trackShape(region);
                 }
             }
             this.unindexable = invalid.toArray(NONE);
@@ -643,19 +760,52 @@ public final class UniverseRegionStore implements RegionStore, RegionLifecycleLi
          * cannot store might be a parent some stored region inherits through.
          */
         private boolean delegates() {
-            return unindexable.length == 0 && !globalGrouped;
+            return unindexable.length == 0 && !globalGrouped && pendingView().empty();
         }
 
+        /**
+         * A redefine can move an id across the storable line either way, so each side retracts the
+         * other. Going unstorable, uSpigot's copy is deleted, or the next load would bring the old
+         * definition back over ours. Going storable, the old instance leaves the side list, where it
+         * would keep matching lookups and keep delegation off for the world.
+         */
         @Override
         public void put(final ProtectedRegion region) {
-            unsaved.add(key(world, region.getId()));
+            final boolean external = applyingExternal.get();
+            if (!external) {
+                unsaved.add(key(world, region.getId()));
+            }
             if (region instanceof GlobalProtectedRegion) {
                 globalGrouped = !region.getFlagGroups().isEmpty();
             }
+            final boolean wasUnindexable = unindexableHas(region.getId());
             if (storable(region)) {
-                publish(world, region);
+                trackShape(region);
+                if (wasUnindexable) {
+                    setUnindexable(region, false);
+                }
+                if (!external) {
+                    queue(region.getId(), region);
+                }
             } else {
+                shaped.remove(region.getId().toLowerCase(Locale.ROOT));
                 setUnindexable(region, true);
+                if (!wasUnindexable) {
+                    retract(region.getId());
+                }
+            }
+        }
+
+        /**
+         * Keeps {@link #shaped} in step with what uSpigot holds: the ids of stored regions that are not
+         * cuboids, whose containment uSpigot may answer differently at a boundary block.
+         */
+        private void trackShape(final ProtectedRegion region) {
+            final String id = region.getId().toLowerCase(Locale.ROOT);
+            if (region instanceof ProtectedCuboidRegion || region instanceof GlobalProtectedRegion) {
+                shaped.remove(id);
+            } else {
+                shaped.add(id);
             }
         }
 
@@ -664,15 +814,163 @@ public final class UniverseRegionStore implements RegionStore, RegionLifecycleLi
             if (region instanceof GlobalProtectedRegion) {
                 globalGrouped = false;
             }
+            shaped.remove(region.getId().toLowerCase(Locale.ROOT));
             if (!storable(region)) {
                 setUnindexable(region, false);
                 return;
             }
-            service.remove(world, region.getId());
-            changed(world);
+            retract(region.getId());
+        }
+
+        /**
+         * Takes {@code id} out of uSpigot: queued for the next flush, and kept as a pending delete
+         * for the next save in case that flush fails.
+         */
+        private void retract(final String id) {
+            queue(id, null);
             pendingDeletes.computeIfAbsent(world, _ -> ConcurrentHashMap.newKeySet())
-                .add(region.getId().toLowerCase(Locale.ROOT));
-            inFlight.remove(key(world, region.getId()));
+                .add(id.toLowerCase(Locale.ROOT));
+            inFlight.remove(key(world, id));
+        }
+
+        private boolean unindexableHas(final String id) {
+            for (final ProtectedRegion r : unindexable) {
+                if (r.getId().equalsIgnoreCase(id)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         * Queues a registry edit and makes sure a flush is scheduled for the next tick. A plugin that
+         * is disabling can no longer schedule, so the edit is sent straight away instead.
+         */
+        void queue(final String id, final @Nullable ProtectedRegion region) {
+            pending.put(id.toLowerCase(Locale.ROOT), new Pending(region));
+            pendingVersion.incrementAndGet();
+            scheduleFlush();
+        }
+
+        private void scheduleFlush() {
+            if (!flushQueued.compareAndSet(false, true)) {
+                return;
+            }
+            try {
+                Bukkit.getGlobalRegionScheduler().run(plugin, _ -> flushTick());
+            } catch (final org.bukkit.plugin.IllegalPluginAccessException disabling) {
+                flush();
+            }
+        }
+
+        /**
+         * One batch per tick. A bulk edit larger than {@link #batchSize} spreads over the ticks
+         * after it, and lookups keep merging what is still queued meanwhile.
+         */
+        private void flushTick() {
+            flushQueued.set(false);
+            sendBatch();
+            if (!pending.isEmpty()) {
+                scheduleFlush();
+            }
+        }
+
+        /**
+         * Sends everything queued, a batch at a time. For saves, unloads and shutdown, which need the
+         * registry current before they go on.
+         */
+        void flush() {
+            flushQueued.set(false);
+            int sent;
+            do {
+                sent = sendBatch();
+            } while (sent > 0);
+        }
+
+        private PendingView pendingView() {
+            final long version = pendingVersion.get();
+            final PendingView view = pendingView;
+            if (view.version() == version) {
+                return view;
+            }
+            final List<ProtectedRegion> puts = new ArrayList<>();
+            for (final Pending queued : pending.values()) {
+                if (queued.region() != null) {
+                    puts.add(queued.region());
+                }
+            }
+            final PendingView fresh = new PendingView(version, puts.toArray(NONE), pending.isEmpty());
+            pendingView = fresh;
+            return fresh;
+        }
+
+        /**
+         * Sends up to {@link #batchSize} queued edits in one {@code removeAll} and one
+         * {@code putAll}. Entries stay queued, and so stay merged into lookups, until uSpigot has
+         * them. A failure is logged and dropped: the regions are still marked unsaved, so the next
+         * save publishes them.
+         *
+         * @return how many entries were taken off the queue
+         */
+        private synchronized int sendBatch() {
+            if (pending.isEmpty()) {
+                return 0;
+            }
+            final int limit = batchSize;
+            final List<Map.Entry<String, Pending>> sent = new ArrayList<>(Math.min(pending.size(), limit));
+            for (final Map.Entry<String, Pending> entry : pending.entrySet()) {
+                sent.add(Map.entry(entry.getKey(), entry.getValue()));
+                if (sent.size() == limit) {
+                    break;
+                }
+            }
+            final List<Region> puts = new ArrayList<>(sent.size());
+            final List<Region> removals = new ArrayList<>();
+            for (final Map.Entry<String, Pending> entry : sent) {
+                final ProtectedRegion region = entry.getValue().region();
+                if (region == null) {
+                    final Region live = service.region(world, entry.getKey());
+                    if (live != null) {
+                        removals.add(live);
+                    }
+                } else if (manager.getRegion(region.getId()) == region) {
+                    final RegionDefinition definition = codec.definition(world, region);
+                    expectEcho(world, definition);
+                    puts.add(definition.toRegion());
+                }
+            }
+            final long callStart = System.nanoTime();
+            try {
+                if (!removals.isEmpty()) {
+                    service.removeAll(removals);
+                }
+                if (!puts.isEmpty()) {
+                    service.putAll(puts);
+                }
+                resize(sent.size(), limit, System.nanoTime() - callStart);
+            } catch (final RuntimeException e) {
+                log.log(Level.WARNING, "Could not send " + sent.size() + " region edit(s) in world '" + world
+                    + "' to UniverseSpigot. They are published again on the next save.", e);
+            } finally {
+                changed(world);
+                for (final Map.Entry<String, Pending> entry : sent) {
+                    pending.remove(entry.getKey(), entry.getValue());
+                }
+                pendingVersion.incrementAndGet();
+            }
+            return sent.size();
+        }
+
+        /**
+         * Scales the next batch to the cost of the last: in proportion when it ran over
+         * {@link #TARGET_FLUSH_NANOS}, doubled when a full batch came in under half of it.
+         */
+        private void resize(final int sent, final int limit, final long elapsed) {
+            if (elapsed > TARGET_FLUSH_NANOS) {
+                batchSize = (int) Math.max(MIN_BATCH, sent * TARGET_FLUSH_NANOS / elapsed);
+            } else if (sent == limit && elapsed < TARGET_FLUSH_NANOS / 2) {
+                batchSize = Math.min(MAX_BATCH, limit * 2);
+            }
         }
 
         private synchronized void setUnindexable(final ProtectedRegion region, final boolean present) {
@@ -688,16 +986,28 @@ public final class UniverseRegionStore implements RegionStore, RegionLifecycleLi
             unindexable = next.toArray(NONE);
         }
 
+        /**
+         * The queue is read before uSpigot is asked. A flush invalidates the cached query before it
+         * empties the queue, so a region is always found in one or the other.
+         */
         @Override
         public List<ProtectedRegion> candidatesAt(final int x, final int y, final int z) {
+            final PendingView queued = pendingView();
             final Collector collector = collectors.get();
             collector.index = this;
             collector.x = x;
             collector.y = y;
             collector.z = z;
-            collector.agrees = delegates();
+            collector.agrees = unindexable.length == 0 && !globalGrouped && queued.empty();
             collector.out = null;
-            query().intersecting(x, y, z, x, y, z, collector);
+            // regionsAt is uSpigot's point query and measured 40-70% cheaper per event than an intersecting box
+            // of one block. It filters by uSpigot's own containment, which only provably matches ours for cuboids,
+            // so a world holding any other shape keeps the box query and the agreement check in visit.
+            if (shaped.isEmpty()) {
+                query().regionsAt(x, y, z, collector);
+            } else {
+                query().intersecting(x, y, z, x, y, z, collector);
+            }
             final Hits out = collector.out;
             if (out != null) {
                 out.agrees = collector.agrees;
@@ -705,18 +1015,52 @@ public final class UniverseRegionStore implements RegionStore, RegionLifecycleLi
             collector.index = null;
             collector.out = null;
             final ProtectedRegion[] extra = unindexable;
-            if (extra.length == 0) {
+            if (extra.length == 0 && queued.puts().length == 0) {
                 return out == null ? List.of() : out;
             }
-            final List<ProtectedRegion> merged = out != null ? out : new ArrayList<>(extra.length);
-            Collections.addAll(merged, extra);
+            List<ProtectedRegion> merged = out;
+            merged = mergeAt(merged, extra, x, y, z);
+            merged = mergeAt(merged, queued.puts(), x, y, z);
+            return merged == null || merged.isEmpty() ? List.of() : merged;
+        }
+
+        /**
+         * Adds each of {@code regions} covering the point, allocating the list only on the first hit so
+         * a wilderness lookup stays allocation-free.
+         */
+        private static @Nullable List<ProtectedRegion> mergeAt(
+            @Nullable List<ProtectedRegion> merged, final ProtectedRegion[] regions,
+            final int x, final int y, final int z
+        ) {
+            for (final ProtectedRegion region : regions) {
+                if (overlaps(region, x, y, z, x, y, z) && (merged == null || !containsSame(merged, region))) {
+                    if (merged == null) {
+                        merged = new ArrayList<>(4);
+                    }
+                    merged.add(region);
+                }
+            }
             return merged;
+        }
+
+        /**
+         * A queued edit of a region uSpigot already holds is reported by both, so a merge checks for
+         * the same instance before adding.
+         */
+        private static boolean containsSame(final List<ProtectedRegion> regions, final ProtectedRegion region) {
+            for (int i = 0, n = regions.size(); i < n; i++) {
+                if (regions.get(i) == region) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         @Override
         public List<ProtectedRegion> intersecting(
             final int minX, final int minY, final int minZ, final int maxX, final int maxY, final int maxZ
         ) {
+            final PendingView queued = pendingView();
             final List<ProtectedRegion> out = new ArrayList<>();
             query().intersecting(minX, minY, minZ, maxX, maxY, maxZ, region -> {
                 if (!Region.GLOBAL_ID.equals(region.id())) {
@@ -727,14 +1071,26 @@ public final class UniverseRegionStore implements RegionStore, RegionLifecycleLi
                 }
             });
             for (final ProtectedRegion region : unindexable) {
-                final BlockVector3 min = region.getMinimumPoint();
-                final BlockVector3 max = region.getMaximumPoint();
-                if (max.x() >= minX && min.x() <= maxX && max.y() >= minY && min.y() <= maxY
-                    && max.z() >= minZ && min.z() <= maxZ) {
+                if (overlaps(region, minX, minY, minZ, maxX, maxY, maxZ) && !containsSame(out, region)) {
+                    out.add(region);
+                }
+            }
+            for (final ProtectedRegion region : queued.puts()) {
+                if (overlaps(region, minX, minY, minZ, maxX, maxY, maxZ) && !out.contains(region)) {
                     out.add(region);
                 }
             }
             return out;
+        }
+
+        private static boolean overlaps(
+            final ProtectedRegion region,
+            final int minX, final int minY, final int minZ, final int maxX, final int maxY, final int maxZ
+        ) {
+            final BlockVector3 min = region.getMinimumPoint();
+            final BlockVector3 max = region.getMaximumPoint();
+            return max.x() >= minX && min.x() <= maxX && max.y() >= minY && min.y() <= maxY
+                && max.z() >= minZ && min.z() <= maxZ;
         }
 
         /**

@@ -85,13 +85,12 @@ public final class UWorldGuard extends com.sk89q.worldguard.bukkit.WorldGuardPlu
      * (Re)starts the autosave at the configured cadence, cancelling any task already running. Reading
      * the period once at enable and dropping the handle meant a reload could neither retune it nor
      * start one that had been configured off at boot.
+     *
+     * <p>Synchronized with {@link #cancelAutoSave}: two overlapping {@code /uwg reload}s could each
+     * cancel the same old task and each assign a new one, orphaning the first.
      */
-    private void scheduleAutoSave(final Settings settings) {
-        final ScheduledTask running = this.autoSaveTask;
-        if (running != null) {
-            running.cancel();
-            this.autoSaveTask = null;
-        }
+    private synchronized void scheduleAutoSave(final Settings settings) {
+        cancelAutoSave();
         final RegionContainerImpl regionContainer = this.container;
         final long period = settings.autoSaveMinutes();
         if (period <= 0L || regionContainer == null) {
@@ -99,6 +98,14 @@ public final class UWorldGuard extends com.sk89q.worldguard.bukkit.WorldGuardPlu
         }
         this.autoSaveTask = getServer().getAsyncScheduler().runAtFixedRate(this,
             _ -> regionContainer.saveAll(), period, period, TimeUnit.MINUTES);
+    }
+
+    private synchronized void cancelAutoSave() {
+        final ScheduledTask running = this.autoSaveTask;
+        if (running != null) {
+            running.cancel();
+            this.autoSaveTask = null;
+        }
     }
 
     /**
@@ -139,6 +146,10 @@ public final class UWorldGuard extends com.sk89q.worldguard.bukkit.WorldGuardPlu
         final boolean worldGuardCompat = prepareWorldGuardCompat();
 
         final RegionStore store = createStore(settings);
+        if (store == null) {
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
         this.store = store;
 
         final RegionContainerImpl regionContainer = new RegionContainerImpl(this, store);
@@ -172,6 +183,7 @@ public final class UWorldGuard extends com.sk89q.worldguard.bukkit.WorldGuardPlu
 
         activatePackets();
         getServer().getPluginManager().registerEvents(new BuildProtectionListener(query, messages), this);
+        getServer().getPluginManager().registerEvents(new PlacedBlocks(this, query, messages), this);
         final MovementListener movement =
             new MovementListener(this, query, messages, collision, pearls, chatTags, restores, settings);
         this.movement = movement;
@@ -297,19 +309,34 @@ public final class UWorldGuard extends com.sk89q.worldguard.bukkit.WorldGuardPlu
         }
     }
 
-    private RegionStore createStore(final Settings settings) {
+    private @Nullable RegionStore createStore(final Settings settings) {
         final RegionStore configured = createConfiguredStore(settings);
+        if (configured == null) {
+            return null;
+        }
         final RegionStore universe = createUniverseStore(configured);
         return universe != null ? universe : configured;
     }
 
-    private RegionStore createConfiguredStore(final Settings settings) {
+    /**
+     * The backend {@code config.yml} selects, or null when SQL is selected and cannot be opened.
+     * Falling back to YAML there enforced an empty or stale copy of the regions and split every
+     * later edit between two stores, so the caller refuses to enable instead.
+     */
+    private @Nullable RegionStore createConfiguredStore(final Settings settings) {
+        if (settings.storageSettingsDisagree()) {
+            getLogger().warning("storage.type is '" + settings.storageType() + "' but storage.sql.enabled"
+                + " does not match it. SQL storage is only used when both select it, so regions are"
+                + " stored in YAML.");
+        }
         if (settings.isSqlEnabled()) {
             try {
                 getLogger().info("Using SQL storage backend.");
                 return new SqlRegionStore(settings.sqlUrl(), settings.sqlUser(), settings.sqlPassword());
             } catch (final Exception e) {
-                getLogger().log(Level.WARNING, "Failed to initialise SQL storage; falling back to YAML.", e);
+                getLogger().log(Level.SEVERE, "Failed to initialise SQL storage. uWorldGuard is disabling"
+                    + " itself rather than run without its regions. Fix storage.sql and restart.", e);
+                return null;
             }
         }
         return new YamlRegionStore(getDataFolder());
@@ -367,8 +394,20 @@ public final class UWorldGuard extends com.sk89q.worldguard.bukkit.WorldGuardPlu
         } catch (final RuntimeException | LinkageError e) {
             getLogger().log(Level.SEVERE, "Error while shutting down; saving regions anyway.", e);
         }
-        if (container != null) {
-            container.saveAllBlocking();
+        // Written here as well as in movement.shutdown, which a throw above can skip. The file is
+        // deleted at boot, so a missed write loses every owed game-mode, speed and flight restore.
+        final PendingRestores owed = this.restores;
+        if (owed != null) {
+            this.restores = null;
+            try {
+                owed.flushNow();
+            } catch (final RuntimeException e) {
+                getLogger().log(Level.SEVERE, "Could not write pending-restores.yml.", e);
+            }
+        }
+        final Settings current = this.settings;
+        if (container != null && current != null) {
+            container.saveAllBlocking(current.unloadSaveWaitSeconds());
         }
         if (store != null) {
             store.close();
@@ -377,11 +416,7 @@ public final class UWorldGuard extends com.sk89q.worldguard.bukkit.WorldGuardPlu
     }
 
     private void releaseRuntime() {
-        final ScheduledTask autoSave = this.autoSaveTask;
-        if (autoSave != null) {
-            autoSave.cancel();
-            this.autoSaveTask = null;
-        }
+        cancelAutoSave();
         final ScheduledTask messageExpiry = this.messageExpiryTask;
         if (messageExpiry != null) {
             messageExpiry.cancel();
@@ -397,7 +432,6 @@ public final class UWorldGuard extends com.sk89q.worldguard.bukkit.WorldGuardPlu
         }
         if (restores != null) {
             restores.stop();
-            restores = null;
         }
         if (movement != null) {
             movement.stop();

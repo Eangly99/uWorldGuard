@@ -195,9 +195,9 @@ Groups: `all` · `members` · `owners` · `nonmembers` · `nonowners` · `none`.
 WorldGuard's spellings work too, so `non-members` and `non_members` are both accepted.
 
 <details>
-<summary><b>Protection</b> — who can touch what (41 flags)</summary>
+<summary><b>Protection</b> — who can touch what (42 flags)</summary>
 
-`build` · `block-break` · `block-place` · `interact` · `use` · `chest-access` · `pvp` ·
+`build` · `block-break` · `block-place` · `break-placed-only` · `interact` · `use` · `chest-access` · `pvp` ·
 `damage-animals` · `fall-damage` · `ride` · `sleep` · `tnt` · `lighter` · `end-crystal-place` ·
 `end-crystal-interact` · `worldedit` · `pistons` · `passthrough` · `entity-item-frame-destroy` ·
 `entity-painting-destroy` · `entity-armor-stand-destroy` · `vehicle-place` · `vehicle-destroy` · `potion-splash` ·
@@ -214,6 +214,11 @@ flags existed are unaffected.
 
 `passthrough` is the odd one: it makes a region *not* apply protection, letting lower-priority
 regions decide instead.
+
+`break-placed-only` is for arenas. Set it to `allow` alongside `block-place allow` and `block-break allow`, and players
+can break only blocks a player placed in the region. The map itself survives, by hand and by explosion.
+`allow-block-break` still lets you name map blocks that stay breakable, like glass. Placed blocks are remembered in the
+chunk, so this survives restarts, and a block an arena reset put back counts as map again.
 </details>
 
 <details>
@@ -353,6 +358,9 @@ storage:
         url: "jdbc:sqlite:plugins/uWorldGuard/regions.db"
 ```
 
+If the database can't be opened at startup, uWorldGuard disables itself instead of running unprotected on empty YAML
+files.
+
 On UniverseSpigot, uWorldGuard detects the server and keeps regions in its built-in region service:
 that service's files store them and its index answers lookups. Each world migrates automatically from the storage
 configured above the first time it loads there, and `universe-migrated.txt` lists the worlds that have moved. The
@@ -464,7 +472,7 @@ The two levels disable independently — a per-flag `false` silences only that f
 `no-permission` silences everything that has no override of its own. `cooldown-seconds` stops the
 same message repeating at a player who's spam-clicking.
 
-Flags that can send a denial: `block-break`, `block-place`, `interact`, `chest-access`,
+Flags that can send a denial: `block-break`, `block-place`, `break-placed-only`, `interact`, `chest-access`,
 `end-crystal-place`, `end-crystal-interact`, `villager-trade`, `permit-workbenches`,
 `inventory-craft`, `disable-completely`, `disable-throw`, `deny-item-drops`, `blocked-cmds`.
 
@@ -723,15 +731,15 @@ thread. The player and the region are safe to touch there; anything else needs a
 Every deliberate edit to a region fires a cancellable event before it is applied, so a plugin can veto one without
 intercepting commands or reaching in with reflection:
 
-| Event                         | Fired before                                   | Extra                                     |
-|-------------------------------|------------------------------------------------|-------------------------------------------|
-| `RegionCreateEvent`           | a region is added                              | the region, not yet in the world          |
-| `RegionRedefineEvent`         | a region is reshaped                           | `getReplacement()`, the new shape         |
-| `RegionRemoveEvent`           | a region is removed                            | last chance to read it                    |
-| `RegionFlagChangeEvent`       | a flag is set, cleared, or narrowed to a group | `getFlag()`, old/new value, old/new group |
-| `RegionPriorityChangeEvent`   | a priority changes                             | `getOldPriority()`, `getNewPriority()`    |
-| `RegionParentChangeEvent`     | a parent is set, changed or cleared            | `getOldParent()`, `getNewParent()`        |
-| `RegionMembershipChangeEvent` | an owner or member is added or removed         | `getRole()`, `getPlayer()`, `isAdding()`  |
+| Event                         | Fired before                                   | Extra                                                    |
+|-------------------------------|------------------------------------------------|----------------------------------------------------------|
+| `RegionCreateEvent`           | a region is added                              | the region, not yet in the world                         |
+| `RegionRedefineEvent`         | a region is reshaped                           | `getReplacement()`, the new shape                        |
+| `RegionRemoveEvent`           | a region is removed                            | last chance to read it                                   |
+| `RegionFlagChangeEvent`       | a flag is set, cleared, or narrowed to a group | `getFlag()`, old/new value, old/new group                |
+| `RegionPriorityChangeEvent`   | a priority changes                             | `getOldPriority()`, `getNewPriority()`                   |
+| `RegionParentChangeEvent`     | a parent is set, changed or cleared            | `getOldParent()`, `getNewParent()`                       |
+| `RegionMembershipChangeEvent` | an owner or member is added or removed         | `getRole()`, `getPlayer()` or `getGroup()`, `isAdding()` |
 
 ```java
 

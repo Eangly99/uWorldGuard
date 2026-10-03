@@ -48,6 +48,13 @@ public final class SessionDispatch {
          */
         @Nullable Location testMove(Player player, Location from, Location to, Move type);
 
+        /**
+         * The same, with the engine region sets the caller already resolved for both ends.
+         */
+        @Nullable Location testMove(Player player, Location from, Location to, Move type,
+                                    com.tricrotism.uworldguard.region.ApplicableRegionSet fromSet,
+                                    com.tricrotism.uworldguard.region.ApplicableRegionSet toSet);
+
         void tick(Player player);
 
         void initialize(Player player);
@@ -90,6 +97,18 @@ public final class SessionDispatch {
     ) {
         final Sink target = sink;
         return target == null ? null : target.testMove(player, from, to, type);
+    }
+
+    /**
+     * For callers that have already resolved both ends, which spares the session two lookups per move.
+     */
+    public static @Nullable Location testMove(
+        final Player player, final Location from, final Location to, final Move type,
+        final com.tricrotism.uworldguard.region.ApplicableRegionSet fromSet,
+        final com.tricrotism.uworldguard.region.ApplicableRegionSet toSet
+    ) {
+        final Sink target = sink;
+        return target == null ? null : target.testMove(player, from, to, type, fromSet, toSet);
     }
 
     /**

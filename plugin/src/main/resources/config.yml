@@ -1,11 +1,20 @@
-# uWorldGuard configuration
+# uWorldGuard configuration.
+# /uwg reload applies everything here except `storage` and `compatibility`, which need a restart.
 
 storage:
-    # "yaml" (default, one file per world) or "sql".
+    # yaml: one file per world. The right choice for almost every server.
+    # sql:  one SQLite database. Needs `sql.enabled: true` too. It is not faster than yaml, so only
+    #       pick it if you want the data in a database.
+    # On UniverseSpigot, regions live in the server's own region service and this backend keeps a
+    # backup copy of every save.
     type: yaml
-    # How often to flush dirty regions to disk, in minutes. 0 disables auto-save.
+    # Minutes between saves. Saves run off the main thread and only touch worlds that changed.
+    #   Lower:  less lost if the server crashes, more disk writes.
+    #   Higher: fewer writes, more lost on a crash.
+    #   0:      save only on shutdown and world unload. A crash loses every edit since boot.
     auto-save-minutes: 5
-    # SQL is optional and disabled by default. YAML is the safe default backend.
+    # Seconds the shutdown save waits for worlds that were unloaded just before and are still saving.
+    unload-save-wait-seconds: 10
     sql:
         enabled: false
         url: "jdbc:sqlite:plugins/uWorldGuard/regions.db"
@@ -13,77 +22,49 @@ storage:
         password: ""
 
 selection:
-    # Item used for the built-in selection wand when WorldEdit is not installed.
-    # When WorldEdit is present, its selection is used instead and this is ignored.
+    # Selection wand item when WorldEdit is not installed. With WorldEdit, its wand is used instead.
     wand-item: WOODEN_AXE
 
-# Blocks listed here are exempt from the blanket `interact` / `use` region check, so a region that
-# denies interaction still lets players right-click them. Everything not listed is unaffected, which
-# is how you deny one kind of block and keep another: leave TRAPDOOR off the list and it stays
-# protected, put NOTE_BLOCK on it and it stays usable.
-#
-# Only that one check is skipped. Flags naming a specific block still apply — chest-access,
-# use-anvil, permit-workbenches, lectern, sign-edit and the rest — so whitelisting a note block does
-# not quietly open every chest in the region.
-#
-# This list applies in every world. A single world can allow more on top of it — see the `worlds`
-# section below.
-#
-# Names are Bukkit material names; anything that doesn't match one is logged at startup and ignored.
-# Apply changes live with /uwg reload.
+# Blocks players may still right-click in regions that deny `interact`/`use`, e.g. NOTE_BLOCK.
+# Only that blanket check is skipped. Specific flags (chest-access, use-anvil, lectern, sign-edit,
+# ...) still apply. Uses Bukkit material names, unknown names are logged and ignored. No
+# performance cost either way.
 interaction:
     whitelist: [ ]
     #whitelist:
     #    - NOTE_BLOCK
     #    - ANVIL
-    #    - ENCHANTING_TABLE
 
-# How player region entry/exit is detected. PlayerMoveEvent is the highest-frequency event a region
-# plugin touches — it fires many times per second per player — so this lets you trade exactness for
-# throughput on busy servers.
+# How entering and leaving regions is detected. This is uWorldGuard's busiest work.
 movement:
-    #   EVENT - handle PlayerMoveEvent. Exact: a denied entry/exit is cancelled before the player
-    #           moves, and greeting/farewell fire the instant the border is crossed. Work scales with
-    #           how much your players move.
-    #   TASK  - poll every `task-interval-ticks` instead. Work scales with player count and the
-    #           interval, not with movement, so it is cheaper and far more predictable under load.
-    #           Trade-offs: a denied crossing cannot be cancelled, so the player is teleported back
-    #           after the fact (a brief rubber-band); entry/exit effects can lag by up to one
-    #           interval; and a player who crosses a region and returns within one interval is never
-    #           seen entering it at all.
-    #           TASK mode also sweeps for containment about once a second: anyone found standing in
-    #           a region that refuses them is moved out, even if they never moved. That catches
-    #           logging in inside a no-entry region, and a region being created or its entry flag
-    #           changed around someone already stood there — neither of which is a crossing, so
-    #           neither mode would otherwise notice. Players are sent to the last spot they were
-    #           accepted at, or world spawn if there isn't one.
+    # EVENT: checks every player movement.
+    #   + Exact. Denied entry/exit is blocked before the player moves, greetings are instant.
+    #   - Cost grows with how much players move. Busy servers feel this most.
+    # TASK: checks each player every `task-interval-ticks` instead.
+    #   + Cost depends on player count only, cheaper and steadier under load.
+    #   - A denied crossing teleports the player back after the fact (brief rubber-band).
+    #   - Greetings and effects can lag by up to one interval.
+    #   - Crossing a region and back within one interval is not seen.
+    #   Also moves anyone standing where they are not allowed about once a second, which covers
+    #   logging in inside a no-entry region.
+    # Pick TASK on large or laggy servers, EVENT when exact borders matter.
     mode: EVENT
-    # Only used when mode is TASK. Lower is more responsive, higher is cheaper. 4 ticks (0.2s) is a
-    # reasonable balance; 1 is effectively per-tick and gives up most of the saving.
+    # TASK only. Lower is more responsive, higher is cheaper. 4 (0.2s) is a good balance, 1 gives
+    # up most of the saving.
     task-interval-ticks: 4
 
-# Per-world settings. Two sections live here:
-#
-#   events      - Bukkit events uWorldGuard should not act on in this world — handy when another
-#                 plugin owns those interactions there, or for creative/minigame worlds. Events are
-#                 matched by their Bukkit class simple name (e.g. BlockBreakEvent,
-#                 PlayerInteractEvent). Skipping is a runtime no-op for that world (Bukkit registers
-#                 handlers globally, so they cannot truly be unregistered per world).
-#   interaction - the same whitelist as the top-level `interaction` section, for this world only. The
-#                 two add up: a block is exempt here if either list names it. There is no way to take
-#                 a globally whitelisted block back for one world — put it in the per-world lists
-#                 instead of the global one if only some worlds should allow it.
-#
-# By default uWorldGuard acts on every event in every world. Apply changes live with /uwg reload.
-# Example (uncomment to use):
+# Per-world overrides.
+#   events:      Bukkit events uWorldGuard ignores in that world, matched by class name
+#                (BlockBreakEvent, PlayerInteractEvent, ...). Ignored events cost almost nothing, so
+#                this is a real saving in minigame or creative worlds another plugin manages.
+#                whitelist-mode: true flips it to "handle only the listed events".
+#   interaction: extra whitelisted blocks for that world, added to the global list above.
 #worlds:
-#    test:
+#    minigames:
 #        interaction:
 #            whitelist:
 #                - NOTE_BLOCK
 #        events:
-#            # false = blacklist (skip the listed events); true = whitelist (act on ONLY the listed
-#            # events and skip every other in this world).
 #            whitelist-mode: false
 #            disabled:
 #                - BlockBreakEvent
@@ -92,48 +73,28 @@ movement:
 #                - EntityDamageEvent
 #                - EntityDamageByEntityEvent
 
-# Startup version check. Nothing is printed when you are already on the latest release — a notice
-# only appears when there is actually something newer, so a clean startup stays clean. The request
-# runs off the main thread after the plugin has finished enabling, and a server with no outbound
-# network simply stays quiet rather than warning about it every restart.
+# Checks for a newer release once at startup, off the main thread. Silent when up to date or offline.
 updates:
     check: true
 
-# Advisory diagnostics. These never change behavior. They explain something that already happened,
-# and on a server running plugins written for WorldGuard they can fill the console at every boot:
-# every flag another plugin tries to register under a name uWorldGuard already defines, every call
-# into a WorldGuard API member that this implementation stubs out, and per-world notes such as which
-# regions allow passthrough. Real problems (load failures, protection gaps, conflicting installs)
-# are always logged regardless of this setting. Turn it on when writing a bug report.
+# Extra console notes for bug reports: flag name clashes with other plugins, calls to WorldGuard
+# API members uWorldGuard does not implement, per-world region notes. Changes nothing, and real
+# problems are always logged. Leave off unless you are reporting a bug.
 logging:
     verbose: false
 
-# How much regions themselves decide, before flags are consulted.
 regions:
-    # Whether a region's owner and member lists grant anything.
-    #
-    # Left true, uWorldGuard behaves the way WorldGuard does: owners and members can build in their
-    # own region, and flags restrict everyone else. This is what almost every setup wants.
-    #
-    # Set false and protection becomes purely flag-driven. Trust lists are still stored and still
-    # editable, they are simply never consulted, so nobody is trusted anywhere by virtue of being
-    # listed. Read that literally before turning it off: a region with no build flag then denies
-    # every player including its own owner, and the only ways left to build there are a flag that
-    # allows it or /uwg bypass. Turning it back on restores the lists untouched.
+    # true:  owners and members can build in their region, flags restrict everyone else. This is
+    #        how WorldGuard works and what almost every server wants.
+    # false: only flags decide. Member lists are kept but ignored, so a region without a build flag
+    #        denies everyone, its owner included. Turning it back on restores the lists as they were.
     membership-grants-trust: true
 
-# uWorldGuard answers to the plugin name "WorldGuard", but Paper attaches no version to a provided
-# name, so a plugin that reads it sees uWorldGuard's own version. Consumers that gate their hook on
-# a WorldGuard version number therefore decline to hook, even though the whole API they want is
-# present. BetonQuest requires 7.0.0 or above, and it is not the only one.
-#
-# Left empty, uWorldGuard publishes the WorldGuard API level it implements in place of its own
-# version, which satisfies those checks. The plugins that read it are the common case, and the
-# failure is quiet: PvPManager drops its whole region integration and says only that a hook failed to
-# load. There is one version field per plugin, so this is all-or-nothing: /version reports it too.
-# The update checker and bStats do not, they use the real version.
-#
-# Set "none" to publish uWorldGuard's own version instead, or a version of your own, which should be
-# a real WorldGuard release rather than an invented number.
+# Version uWorldGuard reports to other plugins. Some plugins (BetonQuest, PvPManager, ...) only hook
+# into WorldGuard 7+, so by default uWorldGuard reports the WorldGuard version it emulates.
+#   "":     report the emulated WorldGuard version. Keeps those hooks working.
+#   "none": report uWorldGuard's own version. Those plugins may then refuse to hook.
+#   "7.x.y": report a specific version. Use a real WorldGuard release.
+# The update checker and bStats always use the real version.
 compatibility:
     report-version: ""

@@ -185,9 +185,31 @@ public final class RegionManager {
 
     public void addRegion(final ProtectedRegion region) {
         region.uwgAttach(backing);
+        adoptParent(region.uwgBacking());
         backing.addRegion(region.uwgBacking());
         backing.markDirty();
         com.tricrotism.uworldguard.wgcompat.CompatDiagnostics.REGION_MUTATIONS.increment();
+    }
+
+    /**
+     * A region copied from another world keeps that world's parent, which flag resolution here can't
+     * see. Point it at this world's region of the same id instead, or drop the parent if there is none.
+     */
+    private void adoptParent(final com.tricrotism.uworldguard.region.ProtectedRegion region) {
+        final com.tricrotism.uworldguard.region.ProtectedRegion parent = region.getParent();
+        if (parent == null) {
+            return;
+        }
+        final com.tricrotism.uworldguard.region.RegionManager parentWorld = parent.uwgOwner();
+        if (parentWorld == null || parentWorld == backing) {
+            return;
+        }
+        final com.tricrotism.uworldguard.region.ProtectedRegion local = backing.getRegion(parent.getId());
+        try {
+            region.setParent(local);
+        } catch (final IllegalArgumentException circular) {
+            region.setParent(null);
+        }
     }
 
     public Set<ProtectedRegion> removeRegion(final String id) {

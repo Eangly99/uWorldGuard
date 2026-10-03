@@ -193,7 +193,9 @@ public final class PendingRestores {
             forget(uuid);
             return;
         }
-        outstanding.put(uuid, state);
+        if (state.equals(outstanding.put(uuid, state))) {
+            return;
+        }
         dirty.set(true);
         scheduleFlush();
     }
@@ -262,25 +264,27 @@ public final class PendingRestores {
                     Files.deleteIfExists(target);
                     return true;
                 }
-                final YamlConfiguration cfg = new YamlConfiguration();
+                // Written by hand: the values are UUIDs, enum names, numbers and booleans, so the
+                // document is fixed in shape, and a YAML dumper per write cost ~270 KB of garbage.
+                final StringBuilder out = new StringBuilder(96 * outstanding.size());
                 for (final Map.Entry<UUID, State> entry : outstanding.entrySet()) {
-                    final String key = entry.getKey().toString();
                     final State state = entry.getValue();
+                    out.append('\'').append(entry.getKey()).append("':\n");
                     if (state.gameMode() != null) {
-                        cfg.set(key + "." + GAME_MODE, state.gameMode().name());
+                        out.append("  ").append(GAME_MODE).append(": ").append(state.gameMode().name()).append('\n');
                     }
                     if (state.walkSpeed() != null) {
-                        cfg.set(key + "." + WALK_SPEED, state.walkSpeed());
+                        out.append("  ").append(WALK_SPEED).append(": ").append(state.walkSpeed().floatValue()).append('\n');
                     }
                     if (state.flySpeed() != null) {
-                        cfg.set(key + "." + FLY_SPEED, state.flySpeed());
+                        out.append("  ").append(FLY_SPEED).append(": ").append(state.flySpeed().floatValue()).append('\n');
                     }
                     if (state.allowFlight() != null) {
-                        cfg.set(key + "." + ALLOW_FLIGHT, state.allowFlight());
+                        out.append("  ").append(ALLOW_FLIGHT).append(": ").append(state.allowFlight().booleanValue()).append('\n');
                     }
                 }
                 Files.createDirectories(target.getParent());
-                Files.writeString(temp, cfg.saveToString());
+                Files.writeString(temp, out);
                 Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING,
                     StandardCopyOption.ATOMIC_MOVE);
                 return true;

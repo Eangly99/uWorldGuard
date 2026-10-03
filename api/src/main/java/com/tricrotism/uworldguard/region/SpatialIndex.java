@@ -28,6 +28,9 @@ public interface SpatialIndex {
      * Regions whose bounding box holds the point, global region excluded, or an empty list. May
      * over-report: the manager tests bounds and exact containment on every candidate itself.
      *
+     * <p>A non-empty list must be fresh and mutable: the manager takes ownership, filters it in place
+     * and keeps it as the result set's region list rather than copying it.
+     *
      * <p>A returned list that is also a {@link FlagResolver} lets flags at this block be resolved by
      * the backend instead of by walking the regions.
      */

@@ -11,7 +11,9 @@ import org.jspecify.annotations.Nullable;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReferenceArray;
+import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 
 /**
  * Holds all regions for a single world. Thread-safe; queried from region threads and
@@ -31,6 +33,13 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
 public final class RegionManager {
 
     private final Map<String, ProtectedRegion> regions = new ConcurrentHashMap<>();
+    /**
+     * Regions whose id is not all lower case, by that exact id. Storage backends hand ids back as
+     * written, and without this a mixed-case id was lowercased into a new string on every lookup. An
+     * entry counts only while its region is still owned by this manager, so a stale one costs the
+     * lowercase fallback, never a wrong answer.
+     */
+    private final Map<String, ProtectedRegion> mixedCaseIds = new ConcurrentHashMap<>();
     private final AtomicBoolean dirty = new AtomicBoolean(false);
     private volatile @Nullable GlobalProtectedRegion global;
     private volatile @Nullable ApplicableRegionSet emptySet;
@@ -41,16 +50,31 @@ public final class RegionManager {
      */
     private final Object compatShimLock = new Object();
 
-    private volatile boolean flagIndexStale = true;
+    /**
+     * Bumped after every edit that can change which flags are set. The index is current while
+     * {@link #flagIndexBuiltAt} matches it. A rebuild records the count it started from, so an edit
+     * landing mid-walk leaves the two apart and the next read rebuilds again.
+     */
+    private final AtomicLong flagEdits = new AtomicLong();
+    private volatile long flagIndexBuiltAt = -1L;
     private volatile long[] usedFlagBits = EMPTY_BITS;
     private volatile boolean groupsInUse;
 
     private static final long[] EMPTY_BITS = new long[0];
+    private static final Comparator<ProtectedRegion> PRIORITY_DESC =
+        Comparator.comparingInt(ProtectedRegion::getPriority).reversed();
 
     private static final int CHUNK_CACHE_BITS = 14;
     private static final int CHUNK_CACHE_SLOTS = 1 << CHUNK_CACHE_BITS; // 16384
     private static final long CHUNK_HASH_MULTIPLIER = 0x9E3779B97F4A7C15L; // fibonacci hashing
-    private volatile AtomicReferenceArray<@Nullable ChunkCandidates> chunkIndex = new AtomicReferenceArray<>(CHUNK_CACHE_SLOTS);
+    /**
+     * {@code null} until the first query after a load or an edit installs a table. See
+     * {@link #invalidateChunkIndex}.
+     */
+    private volatile @Nullable AtomicReferenceArray<@Nullable ChunkCandidates> chunkIndex;
+    @SuppressWarnings("rawtypes")
+    private static final AtomicReferenceFieldUpdater<RegionManager, AtomicReferenceArray> CHUNK_INDEX =
+        AtomicReferenceFieldUpdater.newUpdater(RegionManager.class, AtomicReferenceArray.class, "chunkIndex");
     private volatile @Nullable SpatialIndex spatialIndex;
 
     /**
@@ -77,29 +101,53 @@ public final class RegionManager {
      * {@link #redefineRegion} does. Without that, every child kept pointing at the instance that just
      * left the map: it is unreachable, never saved, and still supplying the flags its children
      * inherit, so an import with {@code --overwrite} left the old values in force until a restart.
+     * The replaced instance is then detached from this world (see {@code retire}).
      */
     public void addRegion(final ProtectedRegion region) {
         region.uwgOwnedBy(this);
-        final ProtectedRegion replaced = regions.put(region.getId().toLowerCase(Locale.ROOT), region);
+        final String id = region.getId();
+        final String key = id.toLowerCase(Locale.ROOT);
+        final ProtectedRegion replaced = regions.put(key, region);
+        trackCase(id, key, region);
         if (region instanceof GlobalProtectedRegion g) {
             global = g;
         } else if (replaced != null && replaced == global) {
             global = null;
         }
         if (replaced != null && replaced != region) {
-            for (final ProtectedRegion r : regions.values()) {
-                if (r != region && r.getParent() == replaced) {
-                    r.setParent(region);
+            if (replaced.uwgHasChildren()) {
+                for (final ProtectedRegion r : regions.values()) {
+                    if (r != region && r.getParent() == replaced) {
+                        r.setParent(region);
+                    }
                 }
             }
             if (region.getParent() == replaced) {
                 region.setParent(null);
             }
+            retire(replaced);
         }
         dirty.set(true);
-        flagIndexStale = true;
+        flagEdits.incrementAndGet();
         invalidateChunkIndex();
         indexPut(region);
+    }
+
+    /**
+     * Detach a region that just left the map. Callers of the WorldGuard API keep region objects, and
+     * an edit through a stale one used to reach this world: it re-sent the old geometry and flags to
+     * the storage index. Its parent link goes too, or the parent kept counting it as a child forever.
+     */
+    private void retire(final ProtectedRegion gone) {
+        gone.uwgOwnedBy(null);
+        gone.setParent(null);
+        mixedCaseIds.remove(gone.getId(), gone);
+    }
+
+    private void trackCase(final String id, final String key, final ProtectedRegion region) {
+        if (!key.equals(id)) {
+            mixedCaseIds.put(id, region);
+        }
     }
 
     /**
@@ -110,17 +158,19 @@ public final class RegionManager {
      * region's bounds, owners and flags while telling both of them it was created.
      */
     public @Nullable ProtectedRegion addRegionIfAbsent(final ProtectedRegion region) {
-        final ProtectedRegion existing =
-            regions.putIfAbsent(region.getId().toLowerCase(Locale.ROOT), region);
+        final String id = region.getId();
+        final String key = id.toLowerCase(Locale.ROOT);
+        final ProtectedRegion existing = regions.putIfAbsent(key, region);
         if (existing != null) {
             return existing;
         }
         region.uwgOwnedBy(this);
+        trackCase(id, key, region);
         if (region instanceof GlobalProtectedRegion g) {
             global = g;
         }
         dirty.set(true);
-        flagIndexStale = true;
+        flagEdits.incrementAndGet();
         invalidateChunkIndex();
         indexPut(region);
         return null;
@@ -139,9 +189,11 @@ public final class RegionManager {
      */
     public @Nullable ProtectedRegion redefineRegion(final ProtectedRegion replacement) {
         replacement.uwgOwnedBy(this);
+        final String id = replacement.getId();
+        final String lower = id.toLowerCase(Locale.ROOT);
         final ProtectedRegion[] previous = new ProtectedRegion[1];
         regions.computeIfPresent(
-            replacement.getId().toLowerCase(Locale.ROOT),
+            lower,
             (key, existing) -> {
                 previous[0] = existing;
                 replacement.copyStateFrom(existing);
@@ -152,19 +204,23 @@ public final class RegionManager {
         if (replaced == null) {
             return null;
         }
+        trackCase(id, lower, replacement);
 
         if (replacement instanceof GlobalProtectedRegion g) {
             global = g;
         } else if (replaced == global) {
             global = null;
         }
-        for (final ProtectedRegion r : regions.values()) {
-            if (r.getParent() == replaced) {
-                r.setParent(replacement);
+        if (replaced.uwgHasChildren()) {
+            for (final ProtectedRegion r : regions.values()) {
+                if (r.getParent() == replaced) {
+                    r.setParent(replacement);
+                }
             }
         }
+        retire(replaced);
         dirty.set(true);
-        flagIndexStale = true;
+        flagEdits.incrementAndGet();
         invalidateChunkIndex();
         indexPut(replacement);
         return replaced;
@@ -174,17 +230,20 @@ public final class RegionManager {
         final ProtectedRegion removed = regions.remove(id.toLowerCase(Locale.ROOT));
         if (removed != null) {
             removed.uwgOwnedBy(null);
+            mixedCaseIds.remove(removed.getId(), removed);
             if (removed == global) {
                 global = null;
             }
 
-            for (final ProtectedRegion r : regions.values()) {
-                if (r.getParent() == removed) {
-                    r.setParent(null);
+            if (removed.uwgHasChildren()) {
+                for (final ProtectedRegion r : regions.values()) {
+                    if (r.getParent() == removed) {
+                        r.setParent(null);
+                    }
                 }
             }
             dirty.set(true);
-            flagIndexStale = true;
+            flagEdits.incrementAndGet();
             invalidateChunkIndex();
             final SpatialIndex index = spatialIndex;
             if (index != null) {
@@ -194,12 +253,25 @@ public final class RegionManager {
         return removed;
     }
 
+    /**
+     * Ids are keyed in lower case. An id already in lower case hits on the first lookup, and a
+     * mixed-case id as the region spells it hits {@code mixedCaseIds}, so neither allocates. Only an
+     * id in some other case pays for lowercasing.
+     */
     public @Nullable ProtectedRegion getRegion(final String id) {
+        final ProtectedRegion exact = regions.get(id);
+        if (exact != null) {
+            return exact;
+        }
+        final ProtectedRegion spelled = mixedCaseIds.get(id);
+        if (spelled != null && spelled.uwgOwner() == this) {
+            return spelled;
+        }
         return regions.get(id.toLowerCase(Locale.ROOT));
     }
 
     public boolean hasRegion(final String id) {
-        return regions.containsKey(id.toLowerCase(Locale.ROOT));
+        return getRegion(id) != null;
     }
 
     public Collection<ProtectedRegion> getRegions() {
@@ -232,7 +304,7 @@ public final class RegionManager {
         final SpatialIndex index = spatialIndex;
         if (index != null) {
             final List<ProtectedRegion> hits = new ArrayList<>(index.intersecting(minX, minY, minZ, maxX, maxY, maxZ));
-            hits.sort(Comparator.comparingInt(ProtectedRegion::getPriority).reversed());
+            hits.sort(PRIORITY_DESC);
             return hits;
         }
         final List<ProtectedRegion> hits = new ArrayList<>();
@@ -248,7 +320,7 @@ public final class RegionManager {
                 hits.add(region);
             }
         }
-        hits.sort(Comparator.comparingInt(ProtectedRegion::getPriority).reversed());
+        hits.sort(PRIORITY_DESC);
         return hits;
     }
 
@@ -290,7 +362,7 @@ public final class RegionManager {
      */
     public void markDirty() {
         dirty.set(true);
-        flagIndexStale = true;
+        flagEdits.incrementAndGet();
     }
 
     /**
@@ -316,7 +388,7 @@ public final class RegionManager {
      * Inherited flags count because the parent that defines them is itself a region.
      */
     public boolean anyRegionUses(final Flag<?> flag) {
-        if (flagIndexStale) {
+        if (flagIndexBuiltAt != flagEdits.get()) {
             rebuildFlagIndex();
         }
         final int index = flag.getIndex();
@@ -328,11 +400,15 @@ public final class RegionManager {
         return word < bits.length && (bits[word] & (1L << index)) != 0L;
     }
 
+    /**
+     * Readers that find the index stale wait here rather than read the old bits, which would answer
+     * "unset" for a flag set a moment ago.
+     */
     private synchronized void rebuildFlagIndex() {
-        if (!flagIndexStale) {
+        final long target = flagEdits.get();
+        if (flagIndexBuiltAt == target) {
             return;
         }
-        flagIndexStale = false;
         final long[] bits = new long[(Flags.count() >> 6) + 1];
         boolean any = false;
         boolean groups = false;
@@ -350,6 +426,7 @@ public final class RegionManager {
         }
         usedFlagBits = any ? bits : EMPTY_BITS;
         groupsInUse = groups;
+        flagIndexBuiltAt = target;
     }
 
     /**
@@ -358,7 +435,7 @@ public final class RegionManager {
      * lookups per region per flag on the hottest path in the plugin.
      */
     boolean anyFlagGroups() {
-        if (flagIndexStale) {
+        if (flagIndexBuiltAt != flagEdits.get()) {
             rebuildFlagIndex();
         }
         return groupsInUse;
@@ -368,26 +445,46 @@ public final class RegionManager {
         return getApplicableRegions(point.x(), point.y(), point.z());
     }
 
+    /**
+     * Kept to a dispatch: the whole lookup was 380 bytes of bytecode, over C2's 325-byte limit for hot
+     * callees, so it was never inlined into the query path that calls it on every event.
+     */
     public ApplicableRegionSet getApplicableRegions(final int x, final int y, final int z) {
         final SpatialIndex index = spatialIndex;
-        final List<ProtectedRegion> candidates;
-        if (index != null) {
-            candidates = index.candidatesAt(x, y, z);
-        } else {
-            final long key = chunkKey(x, z);
-            final AtomicReferenceArray<@Nullable ChunkCandidates> cache = chunkIndex;
-            final int slot = (int) ((key * CHUNK_HASH_MULTIPLIER) >>> (64 - CHUNK_CACHE_BITS));
-            final ChunkCandidates cached = cache.get(slot);
-            if (cached != null && cached.key() == key) {
-                candidates = cached.regions();
-            } else {
-                candidates = buildChunkCandidates(key);
-                cache.set(slot, new ChunkCandidates(key, candidates));
-            }
+        return index != null ? indexedAt(index, x, y, z) : cachedAt(x, y, z);
+    }
+
+    private ApplicableRegionSet indexedAt(final SpatialIndex index, final int x, final int y, final int z) {
+        final List<ProtectedRegion> owned = index.candidatesAt(x, y, z);
+        if (owned.isEmpty() || !retainContaining(owned, x, y, z)) {
+            return emptySet();
         }
+        return new ApplicableRegionSet(owned, global, this,
+            owned instanceof SpatialIndex.FlagResolver resolver ? resolver : null);
+    }
+
+    private ApplicableRegionSet cachedAt(final int x, final int y, final int z) {
+        final List<ProtectedRegion> candidates = chunkCandidates(chunkKey(x, z));
         if (candidates.isEmpty()) {
             return emptySet();
         }
+        return containing(candidates, x, y, z);
+    }
+
+    private List<ProtectedRegion> chunkCandidates(final long key) {
+        final AtomicReferenceArray<@Nullable ChunkCandidates> current = chunkIndex;
+        final AtomicReferenceArray<@Nullable ChunkCandidates> cache = current != null ? current : installChunkIndex();
+        final int slot = (int) ((key * CHUNK_HASH_MULTIPLIER) >>> (64 - CHUNK_CACHE_BITS));
+        final ChunkCandidates cached = cache.get(slot);
+        if (cached != null && cached.key() == key) {
+            return cached.regions();
+        }
+        final List<ProtectedRegion> built = buildChunkCandidates(key);
+        cache.set(slot, new ChunkCandidates(key, built));
+        return built;
+    }
+
+    private ApplicableRegionSet containing(final List<ProtectedRegion> candidates, final int x, final int y, final int z) {
         List<ProtectedRegion> matches = null;
         for (int i = 0, n = candidates.size(); i < n; i++) {
             final ProtectedRegion region = candidates.get(i);
@@ -406,8 +503,33 @@ public final class RegionManager {
         if (matches == null) {
             return emptySet();
         }
-        return new ApplicableRegionSet(matches, global, this,
-            candidates instanceof SpatialIndex.FlagResolver resolver ? resolver : null);
+        return new ApplicableRegionSet(matches, global, this, null);
+    }
+
+    /**
+     * Drops, in place, the index's candidates that do not hold the point. Returns whether any are left.
+     * The index over-reports by bounding box, so this is usually a pass that removes nothing.
+     */
+    private static boolean retainContaining(final List<ProtectedRegion> candidates, final int x, final int y, final int z) {
+        int kept = 0;
+        final int n = candidates.size();
+        for (int i = 0; i < n; i++) {
+            final ProtectedRegion region = candidates.get(i);
+            final BlockVector3 min = region.getMinimumPoint();
+            final BlockVector3 max = region.getMaximumPoint();
+            if (x < min.x() || x > max.x() || y < min.y() || y > max.y() || z < min.z() || z > max.z()
+                || !region.contains(x, y, z)) {
+                continue;
+            }
+            if (kept != i) {
+                candidates.set(kept, region);
+            }
+            kept++;
+        }
+        if (kept < n) {
+            candidates.subList(kept, n).clear();
+        }
+        return kept > 0;
     }
 
     /**
@@ -472,13 +594,31 @@ public final class RegionManager {
 
     /**
      * Drop the per-chunk cache on a region add/remove (which can change what overlaps a chunk).
-     * Assigns a fresh table rather than clearing in place, so a query mid-build can never publish a
-     * stale candidate list — its store lands in the now-orphaned old table. The table is a
+     * Unpublishes the table rather than clearing it in place, so a query mid-build can never publish a
+     * stale candidate list: its store lands in the now-orphaned old table. The table is a
      * fixed-capacity direct-mapped cache: a fresh chunk hashing to an occupied slot simply overwrites
      * it, bounding memory without per-lookup boxing or eviction bookkeeping.
+     *
+     * <p>The next query installs a new table, not this call. A load or import adds regions one at a
+     * time, and allocating the 64 KB table per add made N regions cost N tables of garbage.
      */
     private void invalidateChunkIndex() {
-        chunkIndex = new AtomicReferenceArray<>(CHUNK_CACHE_SLOTS);
+        chunkIndex = null;
+    }
+
+    /**
+     * Installs a fresh table unless another query already did. A compare-and-set rather than a plain
+     * write: a plain write could land after an invalidation and republish a table filled from the
+     * regions as they were before it.
+     */
+    @SuppressWarnings("unchecked")
+    private AtomicReferenceArray<@Nullable ChunkCandidates> installChunkIndex() {
+        final AtomicReferenceArray<@Nullable ChunkCandidates> fresh = new AtomicReferenceArray<>(CHUNK_CACHE_SLOTS);
+        if (CHUNK_INDEX.compareAndSet(this, null, fresh)) {
+            return fresh;
+        }
+        final AtomicReferenceArray<@Nullable ChunkCandidates> raced = chunkIndex;
+        return raced != null ? raced : fresh;
     }
 
     /**

@@ -5,6 +5,11 @@ import com.tricrotism.uworldguard.region.FlagGroupSupport;
 import com.tricrotism.uworldguard.region.RegionContainerImpl;
 import com.tricrotism.uworldguard.region.RegionManager;
 import com.tricrotism.uworldguard.text.Messages;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.JoinConfiguration;
+import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
+import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 import org.bukkit.Bukkit;
 import org.bukkit.World;
 import org.incendo.cloud.annotations.Command;
@@ -77,7 +82,9 @@ public final class MigrationCommands {
                 result = importer.importWorld(world, entry.getValue(), overwrite);
             } catch (final Exception e) {
                 plugin.getLogger().log(Level.WARNING, "WorldGuard migration failed for world " + world, e);
-                error(sender, "Failed to migrate world <aqua>" + world + "</aqua>: " + e.getMessage());
+                error(sender, "Failed to migrate world <aqua><world></aqua>: <reason>",
+                    Placeholder.unparsed("world", world),
+                    Placeholder.unparsed("reason", String.valueOf(e.getMessage())));
                 continue;
             }
             if (result == null) {
@@ -95,15 +102,17 @@ public final class MigrationCommands {
                 warnings.add("[" + world + "] " + warning);
             }
 
-            String line = "<aqua>" + world + "</aqua>: imported " + result.imported();
+            String line = "<aqua><world></aqua>: imported " + result.imported();
             if (result.skipped() > 0) {
                 line += ", skipped " + result.skipped() + " unsupported";
             }
             if (!result.conflicts().isEmpty()) {
-                line += ", " + result.conflicts().size() + " already exist (<aqua>"
-                    + String.join("</aqua>, <aqua>", result.conflicts()) + "</aqua>)";
+                line += ", " + result.conflicts().size() + " already exist (<conflicts>)";
             }
-            note(sender, line);
+            note(sender, line,
+                Placeholder.unparsed("world", world),
+                Placeholder.component("conflicts", listed(result.conflicts().stream()
+                    .map(id -> Component.text(id, NamedTextColor.AQUA)).toList())));
         }
 
         if (worldsWithData == 0) {
@@ -119,16 +128,12 @@ public final class MigrationCommands {
         }
 
         if (!unmappedFlags.isEmpty()) {
-            final StringBuilder sb = new StringBuilder();
-            unmappedFlags.forEach((name, count) -> {
-                if (!sb.isEmpty()) {
-                    sb.append("<gray>, ");
-                }
-                sb.append("<aqua>").append(name).append("</aqua> <dark_gray>×").append(count);
-            });
+            final List<Component> flags = new ArrayList<>(unmappedFlags.size());
+            unmappedFlags.forEach((name, count) -> flags.add(Component.text(name, NamedTextColor.AQUA)
+                .append(Component.text(" ×" + count, NamedTextColor.DARK_GRAY))));
             note(sender, "<yellow>" + unmappedFlags.size()
                 + " WorldGuard flag(s) have no uWorldGuard equivalent and were not imported:");
-            note(sender, sb.toString());
+            note(sender, "<flags>", Placeholder.component("flags", listed(flags)));
             plugin.getLogger().warning("WorldGuard migration: unmapped flags " + unmappedFlags);
         }
 
@@ -161,22 +166,32 @@ public final class MigrationCommands {
             note(sender, "<yellow>" + unenforced.size() + " imported group qualifier(s) are stored but "
                 + "not yet enforced — those flags currently apply to everyone in the region:");
             for (final FlagGroupSupport.Finding f : unenforced) {
-                note(sender, "  <aqua>" + f.region() + "</aqua> <dark_gray>/</dark_gray> <aqua>"
-                    + f.flag() + "</aqua> <dark_gray>→ " + f.group().serialized()
-                    + " <gray>(" + f.world() + ")");
+                note(sender, "  <aqua><region></aqua> <dark_gray>/</dark_gray> <aqua><flag></aqua>"
+                        + " <dark_gray>→ <group> <gray>(<world>)",
+                    Placeholder.unparsed("region", f.region()),
+                    Placeholder.unparsed("flag", f.flag()),
+                    Placeholder.unparsed("group", f.group().serialized()),
+                    Placeholder.unparsed("world", f.world()));
             }
         }
     }
 
-    private static void error(final Source sender, final String message) {
-        sender.source().sendMessage(Messages.format("<red>" + message));
+    /**
+     * Comma-separated, for names read from WorldGuard's files, which must not be parsed as tags.
+     */
+    private static Component listed(final List<? extends Component> items) {
+        return Component.join(JoinConfiguration.separator(Component.text(", ", NamedTextColor.GRAY)), items);
+    }
+
+    private static void error(final Source sender, final String message, final TagResolver... resolvers) {
+        sender.source().sendMessage(Messages.format("<red>" + message, resolvers));
     }
 
     private static void success(final Source sender, final String message) {
         sender.source().sendMessage(Messages.format("<green>" + message));
     }
 
-    private static void note(final Source sender, final String message) {
-        sender.source().sendMessage(Messages.format("<gray>" + message));
+    private static void note(final Source sender, final String message, final TagResolver... resolvers) {
+        sender.source().sendMessage(Messages.format("<gray>" + message, resolvers));
     }
 }

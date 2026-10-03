@@ -97,7 +97,7 @@ public final class VehicleListener implements Listener {
             return;
         }
         if (query.getApplicableRegions(event.getVehicle())
-            .testState(Flags.VEHICLE_DESTROY, attacker.getUniqueId())) {
+            .testBuild(attacker.getUniqueId(), Flags.VEHICLE_DESTROY)) {
             return;
         }
         if (Bypass.has(attacker)) {

@@ -4,11 +4,15 @@ import com.sk89q.worldedit.EditSession;
 import com.sk89q.worldedit.WorldEdit;
 import com.sk89q.worldedit.WorldEditException;
 import com.sk89q.worldedit.bukkit.BukkitAdapter;
+import com.sk89q.worldedit.entity.BaseEntity;
+import com.sk89q.worldedit.entity.Entity;
 import com.sk89q.worldedit.event.extent.EditSessionEvent;
 import com.sk89q.worldedit.extension.platform.Actor;
 import com.sk89q.worldedit.extent.AbstractDelegateExtent;
 import com.sk89q.worldedit.math.BlockVector3;
+import com.sk89q.worldedit.util.Location;
 import com.sk89q.worldedit.util.eventbus.Subscribe;
+import com.sk89q.worldedit.world.biome.BiomeType;
 import com.sk89q.worldedit.world.block.BlockStateHolder;
 import com.tricrotism.uworldguard.config.Bypass;
 import com.tricrotism.uworldguard.flags.Flags;
@@ -18,12 +22,14 @@ import org.bukkit.Bukkit;
 import org.bukkit.World;
 import org.bukkit.entity.Player;
 import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
 
 import java.util.UUID;
 
 /**
  * Enforces the worldedit flag: WorldEdit operations by a non-bypassing player are blocked block-by-
- * block inside any region where worldedit=DENY. Only constructed when WorldEdit is installed (see
+ * block inside any region where worldedit=DENY. Biome changes and pasted entities are checked the
+ * same way, so {@code //setbiome} and {@code //paste -e} cannot reach in either. Only constructed when WorldEdit is installed (see
  * {@code UWorldGuard}), so its classes never load otherwise.
  *
  * <p>The wrap is installed once per edit session at the change stage, and only when a region in the
@@ -81,12 +87,33 @@ public final class WorldEditFlagGuard {
             @Override
             public <B extends BlockStateHolder<B>> boolean setBlock(final BlockVector3 pos, final B block)
                 throws WorldEditException {
-                if (!manager.getApplicableRegions(pos.x(), pos.y(), pos.z())
-                    .testState(Flags.WORLDEDIT, uuid)) {
+                if (!allowed(manager, uuid, pos.x(), pos.y(), pos.z())) {
                     return false;
                 }
                 return super.setBlock(pos, block);
             }
+
+            @Override
+            public boolean setBiome(final BlockVector3 pos, final BiomeType biome) {
+                if (!allowed(manager, uuid, pos.x(), pos.y(), pos.z())) {
+                    return false;
+                }
+                return super.setBiome(pos, biome);
+            }
+
+            @Override
+            public @Nullable Entity createEntity(final Location location, final BaseEntity entity) {
+                if (!allowed(manager, uuid, location.getBlockX(), location.getBlockY(), location.getBlockZ())) {
+                    return null;
+                }
+                return super.createEntity(location, entity);
+            }
         });
+    }
+
+    private static boolean allowed(
+        final RegionManager manager, final @Nullable UUID uuid, final int x, final int y, final int z
+    ) {
+        return manager.getApplicableRegions(x, y, z).testState(Flags.WORLDEDIT, uuid);
     }
 }

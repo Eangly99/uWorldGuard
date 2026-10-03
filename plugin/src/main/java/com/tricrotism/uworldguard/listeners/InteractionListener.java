@@ -60,7 +60,8 @@ public final class InteractionListener implements Listener {
         if (EventGate.disabled(event)) {
             return;
         }
-        if (!query.testState(event.getEntity(), Flags.SHEAR)) {
+        final Entity entity = event.getEntity();
+        if (query.usesFlag(entity.getWorld(), Flags.SHEAR) && !query.testState(entity, Flags.SHEAR)) {
             event.setCancelled(true);
         }
     }

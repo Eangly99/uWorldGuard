@@ -11,12 +11,21 @@ import com.tricrotism.uworldguard.text.MessageService;
 import com.tricrotism.uworldguard.util.BlockVector3;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
+import org.bukkit.block.BlockFace;
+import org.bukkit.block.BlockState;
+import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockMultiPlaceEvent;
+import org.bukkit.event.entity.EntityInteractEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.inventory.EquipmentSlot;
+import org.bukkit.inventory.ItemStack;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockbukkit.mockbukkit.MockBukkit;
 import org.mockbukkit.mockbukkit.ServerMock;
+import org.mockbukkit.mockbukkit.entity.ItemMock;
 import org.mockbukkit.mockbukkit.entity.PlayerMock;
 import org.mockbukkit.mockbukkit.plugin.PluginMock;
 import org.mockbukkit.mockbukkit.world.WorldMock;
@@ -24,6 +33,8 @@ import org.mockbukkit.mockbukkit.world.WorldMock;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.List;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -144,6 +155,88 @@ class BuildProtectionTest {
 
         assertNotNull(stranger.nextMessage(), "the first denial explains itself");
         assertEquals(null, stranger.nextMessage(), "the second is suppressed by the cooldown");
+    }
+
+    private boolean step(final PlayerMock player, final int x, final int y, final int z) {
+        final Block plate = world.getBlockAt(x, y, z);
+        plate.setType(Material.STONE_PRESSURE_PLATE);
+        final PlayerInteractEvent event = new PlayerInteractEvent(player, Action.PHYSICAL, null, plate, BlockFace.SELF);
+        listener.onStep(event);
+        return !event.isCancelled();
+    }
+
+    @Test
+    void aStrangerCannotTriggerAPressurePlateInAClaim() {
+        claim("plot");
+        final PlayerMock stranger = server.addPlayer();
+
+        assertFalse(step(stranger, 16, 64, 16));
+        assertNull(stranger.nextMessage(), "standing on a plate repeats every tick, so nothing is sent");
+    }
+
+    @Test
+    void aMemberCanTriggerAPressurePlateInTheirClaim() {
+        final PlayerMock member = server.addPlayer();
+        claim("plot").getMembers().addPlayer(member.getUniqueId());
+
+        assertTrue(step(member, 16, 64, 16));
+    }
+
+    @Test
+    void anItemAStrangerThrewCannotTriggerAPlateInAClaim() {
+        claim("plot");
+        final PlayerMock stranger = server.addPlayer();
+        final Block plate = world.getBlockAt(16, 64, 16);
+        plate.setType(Material.OAK_PRESSURE_PLATE);
+        final UUID thrower = stranger.getUniqueId();
+        final ItemMock item = new ItemMock(server, UUID.randomUUID(), new ItemStack(Material.STONE)) {
+            @Override
+            public UUID getThrower() {
+                return thrower;
+            }
+        };
+        item.setLocation(plate.getLocation());
+        final EntityInteractEvent event = new EntityInteractEvent(item, plate);
+
+        listener.onEntityStep(event);
+
+        assertTrue(event.isCancelled());
+    }
+
+    @Test
+    void aBedWhoseHeadLandsInAClaimIsRefused() {
+        claim("plot");
+        final PlayerMock stranger = server.addPlayer();
+        final Block foot = world.getBlockAt(-1, 64, 5);
+        final Block head = world.getBlockAt(0, 64, 5);
+        final BlockState footBefore = foot.getState();
+        final BlockState headBefore = head.getState();
+        foot.setType(Material.RED_BED);
+        head.setType(Material.RED_BED);
+        final BlockMultiPlaceEvent event = new BlockMultiPlaceEvent(List.of(footBefore, headBefore),
+            world.getBlockAt(-1, 63, 5), new ItemStack(Material.RED_BED), stranger, true, EquipmentSlot.HAND);
+
+        listener.onPlace(event);
+
+        assertTrue(event.isCancelled(), "the foot is in the wilderness but the head is in the claim");
+    }
+
+    @Test
+    void aBedOutsideEveryClaimIsAllowed() {
+        claim("plot");
+        final PlayerMock stranger = server.addPlayer();
+        final Block foot = world.getBlockAt(-2, 64, 5);
+        final Block head = world.getBlockAt(-1, 64, 5);
+        final BlockState footBefore = foot.getState();
+        final BlockState headBefore = head.getState();
+        foot.setType(Material.RED_BED);
+        head.setType(Material.RED_BED);
+        final BlockMultiPlaceEvent event = new BlockMultiPlaceEvent(List.of(footBefore, headBefore),
+            world.getBlockAt(-2, 63, 5), new ItemStack(Material.RED_BED), stranger, true, EquipmentSlot.HAND);
+
+        listener.onPlace(event);
+
+        assertFalse(event.isCancelled());
     }
 
     @Test

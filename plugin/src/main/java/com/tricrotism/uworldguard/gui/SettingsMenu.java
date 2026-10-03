@@ -87,16 +87,16 @@ public final class SettingsMenu {
     }
 
     private void promptMessage(final Player player, final String key) {
-        player.closeInventory();
-        player.sendMessage(Messages.format("<gray>Type the new text for <aqua><key></aqua>, "
-                + "<red>false</red> to disable, or <red>cancel</red>.",
-            Placeholder.unparsed("key", key)));
-        chatInput.await(player.getUniqueId(), value -> {
-            messages.setMessage(key, value);
-            player.sendMessage(Messages.format("<green>Updated <aqua><key></aqua>.",
-                Placeholder.unparsed("key", key)));
-            open(player);
-        });
+        MenuItems.prompt(player, chatInput,
+            Messages.format("<gray>Type the new text for <aqua><key></aqua>, or <white>false</white> to turn it off.",
+                Placeholder.unparsed("key", key)),
+            messages.raw(key),
+            value -> {
+                messages.setMessage(key, value);
+                player.sendMessage(Messages.format("<green>Updated <aqua><key></aqua>.",
+                    Placeholder.unparsed("key", key)));
+                open(player);
+            }, () -> open(player));
     }
 
     private Item cooldownItem() {
@@ -112,16 +112,17 @@ public final class SettingsMenu {
     }
 
     private void promptCooldown(final Player player) {
-        player.closeInventory();
-        player.sendMessage(Messages.format("<gray>Type the cooldown in seconds, or <red>cancel</red>."));
-        chatInput.await(player.getUniqueId(), value -> {
-            try {
-                messages.setCooldownSeconds(Long.parseLong(value.trim()));
-                player.sendMessage(Messages.format("<green>Cooldown updated."));
-            } catch (final NumberFormatException e) {
-                player.sendMessage(Messages.format("<red>Not a number."));
-            }
-            open(player);
-        });
+        MenuItems.prompt(player, chatInput,
+            Messages.format("<gray>Type how many seconds before the same message can show again. <white>0</white> = no limit."),
+            Long.toString(messages.cooldownSeconds()),
+            value -> {
+                try {
+                    messages.setCooldownSeconds(Long.parseLong(value.trim()));
+                    player.sendMessage(Messages.format("<green>Cooldown updated."));
+                } catch (final NumberFormatException e) {
+                    player.sendMessage(Messages.format("<red>That isn't a whole number."));
+                }
+                open(player);
+            }, () -> open(player));
     }
 }

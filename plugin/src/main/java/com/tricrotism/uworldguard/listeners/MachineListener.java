@@ -3,14 +3,18 @@ package com.tricrotism.uworldguard.listeners;
 import com.tricrotism.uworldguard.config.Bypass;
 import com.tricrotism.uworldguard.config.EventGate;
 import com.tricrotism.uworldguard.flags.Flags;
+import com.tricrotism.uworldguard.flags.State;
 import com.tricrotism.uworldguard.region.ApplicableRegionSet;
+import com.tricrotism.uworldguard.region.ProtectedRegion;
 import com.tricrotism.uworldguard.region.RegionContainerImpl;
 import com.tricrotism.uworldguard.region.RegionQuery;
 import com.tricrotism.uworldguard.text.MessageService;
 import io.papermc.paper.event.block.VaultChangeStateEvent;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.World;
 import org.bukkit.block.Block;
+import org.bukkit.block.BlockFace;
 import org.bukkit.block.data.Directional;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -48,41 +52,51 @@ public final class MachineListener implements Listener {
         if (EventGate.disabled(event)) {
             return;
         }
-        if (!query.testState(event.getBlock(), Flags.CRAFTER)) {
+        final Block block = event.getBlock();
+        if (query.usesFlag(block.getWorld(), Flags.CRAFTER) && !query.testState(block, Flags.CRAFTER)) {
             event.setCancelled(true);
         }
     }
 
     /**
-     * Hopper and dropper transfers, judged at the destination — the side that gains the item. A hopper
-     * chain reaching under a border to drain a region's chests is the case worth stopping, and gating
-     * the source instead would let exactly that through.
+     * Hopper and dropper transfers, judged at both ends. A hopper or hopper minecart just outside a
+     * region, under it or beside it, pulls from a chest inside: the destination is outside, so only the
+     * source sees the flag. A chain pushing into a region is caught at the destination. Either end
+     * denying stops the move. The destination is tested first and the source only when it passes.
      *
      * <p>This is the hottest event the plugin listens to: it fires for every item every hopper moves.
      * The registry check comes first because {@code getLocation()} allocates a {@link Location} — on a
      * server where no region sets the flag this handler is a bitset test per world and nothing else:
      * no allocation, no region resolved.
      *
-     * <p>The registry test comes before {@code EventGate} rather than after it, reversing the order
-     * every other handler uses. The gate resolves this event's world through the destination
-     * inventory's location, which builds one, and this is the hottest event uWorldGuard listens to.
-     * So the bitset test that answers "no region anywhere uses this flag" goes first, and the common
-     * case never gets that far.
+     * <p>A transfer never crosses worlds, so the destination's world answers the per-world flag test
+     * and the event gate for both ends. {@code InventoryMoveItemEvent} is not an inventory event, so
+     * the gate is consulted by world and name here.
      */
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onHopperTransfer(final InventoryMoveItemEvent event) {
-        if (!container.anyRegionUses(Flags.HOPPER_TRANSFER) || EventGate.disabled(event)) {
+        if (!container.anyRegionUses(Flags.HOPPER_TRANSFER)) {
             return;
         }
         final Location destination = event.getDestination().getLocation();
         if (destination == null) {
             return;
         }
-        final ApplicableRegionSet set = query.getApplicableRegions(destination);
-        if (set.worldUses(Flags.HOPPER_TRANSFER) && !set.testState(Flags.HOPPER_TRANSFER)) {
+        final World world = destination.getWorld();
+        if (!query.usesFlag(world, Flags.HOPPER_TRANSFER) || EventGate.disabled(world, HOPPER_EVENT)) {
+            return;
+        }
+        if (!query.testState(destination, Flags.HOPPER_TRANSFER)) {
+            event.setCancelled(true);
+            return;
+        }
+        final Location source = event.getSource().getLocation();
+        if (source != null && !query.testState(source, Flags.HOPPER_TRANSFER)) {
             event.setCancelled(true);
         }
     }
+
+    private static final String HOPPER_EVENT = InventoryMoveItemEvent.class.getSimpleName();
 
     /**
      * A dispenser answers for where it stands, and — when what it dispenses becomes a block — for
@@ -90,6 +104,11 @@ public final class MachineListener implements Listener {
      * region with water or lava without a {@code BlockPlaceEvent} of anyone's, so the target is
      * tested too. Only the three fluid buckets get that far: everything else either leaves the world
      * alone or arrives through an event of its own (a fire charge as {@code BlockIgniteEvent}).
+     *
+     * <p>The target is protected the way a player's placement would be. An explicit
+     * {@code block-place} decides outright. Unset, the fluid is refused when it lands in a region the
+     * dispenser does not stand in, unless the two share a {@code nonplayer-protection-domains} name,
+     * as pistons do. So a region protected only by membership is safe from a dispenser outside it.
      */
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onDispense(final BlockDispenseEvent event) {
@@ -97,17 +116,54 @@ public final class MachineListener implements Listener {
             return;
         }
         final Block block = event.getBlock();
-        if (!query.testState(block, Flags.DISPENSE)) {
+        final World world = block.getWorld();
+        final boolean fluid = isFluidBucket(event.getItem().getType());
+        if (!fluid && !query.usesFlag(world, Flags.DISPENSE)) {
+            return;
+        }
+        final ApplicableRegionSet atDispenser = query.getApplicableRegions(block);
+        if (!atDispenser.testState(Flags.DISPENSE)) {
             event.setCancelled(true);
             return;
         }
-        if (!isFluidBucket(event.getItem().getType())) {
+        if (!fluid || !(block.getBlockData() instanceof Directional directional)) {
             return;
         }
-        if (block.getBlockData() instanceof Directional directional
-            && !query.testState(block.getRelative(directional.getFacing()), Flags.BLOCK_PLACE)) {
+        final BlockFace facing = directional.getFacing();
+        final ApplicableRegionSet atTarget = query.getApplicableRegions(world,
+            block.getX() + facing.getModX(), block.getY() + facing.getModY(), block.getZ() + facing.getModZ());
+        final State explicit = atTarget.queryExplicitState(Flags.BLOCK_PLACE, null);
+        if (explicit == State.DENY || (explicit == null && entersForeignRegion(atDispenser, atTarget))) {
             event.setCancelled(true);
         }
+    }
+
+    /**
+     * Whether {@code atTarget} holds a region {@code atSource} does not, skipping passthrough regions
+     * since they protect nothing. A shared domain name opens the target, as for pistons.
+     */
+    private static boolean entersForeignRegion(
+        final ApplicableRegionSet atSource, final ApplicableRegionSet atTarget
+    ) {
+        for (int i = 0, n = atTarget.size(); i < n; i++) {
+            final ProtectedRegion region = atTarget.get(i);
+            if (region.getFlag(Flags.PASSTHROUGH) == State.ALLOW || contains(atSource, region)) {
+                continue;
+            }
+            return !atTarget.flagSetIntersects(Flags.NONPLAYER_PROTECTION_DOMAINS,
+                atSource.flagSetUnion(Flags.NONPLAYER_PROTECTION_DOMAINS));
+        }
+        return false;
+    }
+
+    private static boolean contains(final ApplicableRegionSet set, final ProtectedRegion region) {
+        final String id = region.getId();
+        for (int i = 0, n = set.size(); i < n; i++) {
+            if (set.get(i).getId().equals(id)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean isFluidBucket(final Material item) {
@@ -124,7 +180,8 @@ public final class MachineListener implements Listener {
         if (EventGate.disabled(event)) {
             return;
         }
-        if (query.testState(event.getBlock(), Flags.TNT_PRIME)) {
+        final Block block = event.getBlock();
+        if (!query.usesFlag(block.getWorld(), Flags.TNT_PRIME) || query.testState(block, Flags.TNT_PRIME)) {
             return;
         }
         if (event.getPrimingEntity() instanceof Player player && Bypass.has(player)) {
@@ -138,7 +195,8 @@ public final class MachineListener implements Listener {
         if (EventGate.disabled(event)) {
             return;
         }
-        if (!query.testState(event.getBlock(), Flags.SPONGE_ABSORB)) {
+        final Block block = event.getBlock();
+        if (query.usesFlag(block.getWorld(), Flags.SPONGE_ABSORB) && !query.testState(block, Flags.SPONGE_ABSORB)) {
             event.setCancelled(true);
         }
     }
@@ -186,7 +244,8 @@ public final class MachineListener implements Listener {
         if (EventGate.disabled(event)) {
             return;
         }
-        if (!query.testState(event.getBlock(), Flags.BREW)) {
+        final Block block = event.getBlock();
+        if (query.usesFlag(block.getWorld(), Flags.BREW) && !query.testState(block, Flags.BREW)) {
             event.setCancelled(true);
         }
     }
@@ -200,7 +259,8 @@ public final class MachineListener implements Listener {
         if (EventGate.disabled(event)) {
             return;
         }
-        if (!query.testState(event.getBlock(), Flags.SMELT)) {
+        final Block block = event.getBlock();
+        if (query.usesFlag(block.getWorld(), Flags.SMELT) && !query.testState(block, Flags.SMELT)) {
             event.setCancelled(true);
         }
     }

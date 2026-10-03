@@ -9,14 +9,15 @@ import com.sk89q.worldguard.protection.flags.StateFlag;
 import com.sk89q.worldguard.protection.regions.GlobalProtectedRegion;
 import com.sk89q.worldguard.protection.regions.ProtectedCuboidRegion;
 import com.sk89q.worldguard.protection.regions.ProtectedRegion;
+import com.tricrotism.uworldguard.wgcompat.RegionAdapters;
+import com.tricrotism.uworldguard.wgcompat.WrappedRegionSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * The WorldGuard-API resolution consumers reach through {@link FlagValueCalculator} and
@@ -102,5 +103,62 @@ class FlagValueCalculatorTest {
 
         assertEquals(Association.OWNER,
             new RegionOverlapAssociation(Set.of(source)).getAssociation(List.of(target)));
+    }
+
+    private static com.tricrotism.uworldguard.region.ProtectedCuboidRegion engineRegion(final String id, final int priority) {
+        final com.tricrotism.uworldguard.region.ProtectedCuboidRegion region =
+            new com.tricrotism.uworldguard.region.ProtectedCuboidRegion(id,
+                com.tricrotism.uworldguard.util.BlockVector3.at(0, 0, 0),
+                com.tricrotism.uworldguard.util.BlockVector3.at(16, 255, 16));
+        region.setPriority(priority);
+        return region;
+    }
+
+    @Test
+    void engineFastPathSkipsValuesQualifiedAwayFromTheSubject() {
+        final com.tricrotism.uworldguard.region.RegionManager manager = new com.tricrotism.uworldguard.region.RegionManager();
+        final com.tricrotism.uworldguard.region.ProtectedCuboidRegion low = engineRegion("low", 0);
+        low.setFlag(com.tricrotism.uworldguard.flags.Flags.GREETING, "everyone");
+        final com.tricrotism.uworldguard.region.ProtectedCuboidRegion high = engineRegion("high", 10);
+        high.setFlag(com.tricrotism.uworldguard.flags.Flags.GREETING, "owners only");
+        high.setFlagGroup(com.tricrotism.uworldguard.flags.Flags.GREETING,
+            com.tricrotism.uworldguard.flags.RegionGroup.OWNERS);
+        manager.addRegion(low);
+        manager.addRegion(high);
+
+        final WrappedRegionSet set = new WrappedRegionSet(manager.getApplicableRegions(8, 64, 8), manager);
+
+        assertEquals("everyone", set.queryValue(null, Flags.GREET_MESSAGE));
+        assertEquals(List.of("everyone"), List.copyOf(set.queryAllValues(null, Flags.GREET_MESSAGE)));
+    }
+
+    @Test
+    void aParentFromAnotherWorldIsRefused() {
+        final com.tricrotism.uworldguard.region.RegionManager here = new com.tricrotism.uworldguard.region.RegionManager();
+        final com.tricrotism.uworldguard.region.RegionManager elsewhere = new com.tricrotism.uworldguard.region.RegionManager();
+        final com.tricrotism.uworldguard.region.ProtectedCuboidRegion child = engineRegion("shop", 0);
+        final com.tricrotism.uworldguard.region.ProtectedCuboidRegion parent = engineRegion("mall", 0);
+        here.addRegion(child);
+        elsewhere.addRegion(parent);
+
+        final ProtectedRegion shimChild = RegionAdapters.region(child, here);
+        final ProtectedRegion shimParent = RegionAdapters.region(parent, elsewhere);
+
+        assertThrows(IllegalArgumentException.class, () -> shimChild.setParent(shimParent));
+        assertNull(child.getParent());
+    }
+
+    @Test
+    void engineFastPathFallsBackToTheGlobalRegionForAllValues() {
+        final com.tricrotism.uworldguard.region.RegionManager manager = new com.tricrotism.uworldguard.region.RegionManager();
+        final com.tricrotism.uworldguard.region.GlobalProtectedRegion global =
+            new com.tricrotism.uworldguard.region.GlobalProtectedRegion();
+        global.setFlag(com.tricrotism.uworldguard.flags.Flags.GREETING, "hello");
+        manager.addRegion(global);
+        manager.addRegion(engineRegion("plain", 0));
+
+        final WrappedRegionSet set = new WrappedRegionSet(manager.getApplicableRegions(8, 64, 8), manager);
+
+        assertEquals(List.of("hello"), List.copyOf(set.queryAllValues(null, Flags.GREET_MESSAGE)));
     }
 }

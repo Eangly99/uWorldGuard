@@ -29,15 +29,10 @@ import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
-import org.bukkit.event.EventHandler;
-import org.bukkit.event.EventPriority;
-import org.bukkit.event.HandlerList;
-import org.bukkit.event.Listener;
+import org.bukkit.event.*;
 import org.bukkit.event.entity.EntityDismountEvent;
 import org.bukkit.event.entity.EntityMountEvent;
-import org.bukkit.event.player.PlayerJoinEvent;
-import org.bukkit.event.player.PlayerMoveEvent;
-import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.*;
 import org.bukkit.event.vehicle.VehicleMoveEvent;
 import org.bukkit.plugin.Plugin;
 import org.jspecify.annotations.NullMarked;
@@ -66,6 +61,11 @@ public final class MovementListener implements Listener {
     private final ChatTags chatTags;
     private final PendingRestores restores;
     private final Map<UUID, GameMode> savedGameModes = new ConcurrentHashMap<>();
+    /**
+     * The {@code game-mode} value each player is currently under. The flag acts when this changes,
+     * as WorldGuard's does, so a mode the player picks inside the region is left alone.
+     */
+    private final Map<UUID, GameMode> appliedGameModes = new ConcurrentHashMap<>();
     private final Map<UUID, Float> savedWalkSpeed = new ConcurrentHashMap<>();
     private final Map<UUID, Float> savedFlySpeed = new ConcurrentHashMap<>();
     private final Map<UUID, Boolean> savedAllowFlight = new ConcurrentHashMap<>();
@@ -74,6 +74,10 @@ public final class MovementListener implements Listener {
     private volatile boolean mountMovesRegistered;
     private final Set<UUID> hidden = ConcurrentHashMap.newKeySet();
     private final Map<UUID, Location> lastPosition = new ConcurrentHashMap<>();
+    /**
+     * Players with a post-teleport settle queued, so a burst of teleports queues one task.
+     */
+    private final Set<UUID> settling = ConcurrentHashMap.newKeySet();
 
     private volatile boolean taskMode;
     private volatile int taskTicks;
@@ -134,11 +138,128 @@ public final class MovementListener implements Listener {
             return;
         }
         if (SessionDispatch.ACTIVE
-            && SessionDispatch.testMove(player, from, to, SessionDispatch.selfMove(player)) != null) {
+            && SessionDispatch.testMove(player, from, to, SessionDispatch.selfMove(player), fromSet, toSet) != null) {
             event.setCancelled(true);
             return;
         }
         applyState(player, toSet);
+    }
+
+    /**
+     * Entry enforcement for teleports in EVENT mode. A teleport never fires {@link PlayerMoveEvent},
+     * so without this a {@code /tp}, warp or pearl landed inside a region its entry flag refuses.
+     *
+     * <p>HIGHEST, so it runs after {@link PlayerStateListener}'s HIGH checks: a teleport they already
+     * refused (pearl, chorus, exit-via-teleport, session handler) is skipped and the player gets one
+     * message, not two. Leaving is theirs to judge. TASK mode needs none of this, since the poll sees
+     * a teleport landing like any other move.
+     */
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onTeleport(final PlayerTeleportEvent event) {
+        if (!taskMode && teleportDenied(event)) {
+            event.setCancelled(true);
+        }
+    }
+
+    /**
+     * {@code PlayerPortalEvent} declares its own handler list, so it never reaches {@link #onTeleport}.
+     */
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onPortal(final PlayerPortalEvent event) {
+        if (!taskMode && teleportDenied(event)) {
+            event.setCancelled(true);
+        }
+    }
+
+    private boolean teleportDenied(final PlayerTeleportEvent event) {
+        final Location from = event.getFrom();
+        final Location to = event.getTo();
+        if (sameBlock(from, to) || EventGate.disabled(event)) {
+            return false;
+        }
+        final ApplicableRegionSet toSet = query.getApplicableRegions(to);
+        if (toSet.isEmpty()) {
+            return false;
+        }
+        final ApplicableRegionSet fromSet = query.getApplicableRegions(from);
+        return !isInside(fromSet, toSet)
+            && crossingDenied(event.getPlayer(), to.getWorld(), fromSet, toSet, true, false);
+    }
+
+    /**
+     * Enter/leave effects and region state for a teleport that went through. MONITOR, so nothing is
+     * announced for a teleport another plugin cancels.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onTeleported(final PlayerTeleportEvent event) {
+        if (!taskMode) {
+            settleAfter(event, event.getPlayer(), event.getFrom(), event.getTo());
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onPortalled(final PlayerPortalEvent event) {
+        if (!taskMode) {
+            settleAfter(event, event.getPlayer(), event.getFrom(), event.getTo());
+        }
+    }
+
+    /**
+     * Respawning moves the player without a move or teleport event. Nothing to refuse here, only the
+     * effects and state of where they died versus where they come back.
+     */
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onRespawn(final PlayerRespawnEvent event) {
+        if (!taskMode) {
+            final Player player = event.getPlayer();
+            settleAfter(event, player, player.getLocation(), event.getRespawnLocation());
+        }
+    }
+
+    /**
+     * Runs the crossing from {@code from} one tick after the jump, against wherever the player
+     * actually is by then. {@link #applyState} sets game mode, speed and flight, which belong on the
+     * player after the move has applied rather than before. One settle per player at a time: portal
+     * travel can fire both a portal and a teleport event, and the first one's origin is the true one.
+     */
+    private void settleAfter(final Event event, final Player player, final Location from, final Location to) {
+        if (sameBlock(from, to) || EventGate.disabled(event)) {
+            return;
+        }
+        if (from.getWorld() == to.getWorld()) {
+            final ApplicableRegionSet fromSet = query.getApplicableRegions(from);
+            final ApplicableRegionSet toSet = query.getApplicableRegions(to);
+            if (isInside(fromSet, toSet) && isInside(toSet, fromSet)) {
+                return;
+            }
+        }
+        final UUID uuid = player.getUniqueId();
+        if (!settling.add(uuid)) {
+            return;
+        }
+        final Location origin = from.clone();
+        if (player.getScheduler().runDelayed(plugin, _ -> settle(player, origin), null, 1L) == null) {
+            settling.remove(uuid);
+        }
+    }
+
+    private void settle(final Player player, final Location from) {
+        settling.remove(player.getUniqueId());
+        final ApplicableRegionSet fromSet = query.getApplicableRegions(from);
+        final ApplicableRegionSet toSet = query.getApplicableRegions(player);
+        final boolean entering = !isInside(fromSet, toSet);
+        final boolean leaving = !isInside(toSet, fromSet);
+        if (entering || leaving) {
+            runCrossing(player, fromSet, toSet, entering, leaving);
+        }
+        applyState(player, toSet);
+    }
+
+    private static boolean sameBlock(final Location from, final Location to) {
+        return from.getWorld() == to.getWorld()
+            && from.getBlockX() == to.getBlockX()
+            && from.getBlockY() == to.getBlockY()
+            && from.getBlockZ() == to.getBlockZ();
     }
 
     /**
@@ -198,7 +319,7 @@ public final class MovementListener implements Listener {
      * stale position would be judged as a crossing the player never made.
      */
     public void applySettings(final Settings settings) {
-        stop();
+        stopPolls();
         readSettings(settings);
         lastPosition.clear();
         start();
@@ -208,12 +329,23 @@ public final class MovementListener implements Listener {
      * Cancels every poll. Paper drops a plugin's tasks on disable anyway, but holding the handles
      * keeps reload honest — without them a mode switch would leave the previous polls running
      * alongside the new ones, double-enforcing every crossing.
+     *
+     * <p>Mount tracking is left alone: a reload does not change it, and clearing it would stop
+     * enforcing every ride already in progress.
      */
-    public void stop() {
+    private void stopPolls() {
         for (final ScheduledTask task : pollTasks.values()) {
             task.cancel();
         }
         pollTasks.clear();
+    }
+
+    /**
+     * Disable-time teardown: the polls, plus the mount listener. Writing {@code mountMovesRegistered}
+     * off the global thread is safe only here, where no further sync can be scheduled.
+     */
+    public void stop() {
+        stopPolls();
         HandlerList.unregisterAll(mountMoves);
         mountMovesRegistered = false;
         riddenMounts.clear();
@@ -251,6 +383,7 @@ public final class MovementListener implements Listener {
             restores.forget(uuid);
         }
         savedGameModes.clear();
+        appliedGameModes.clear();
         savedWalkSpeed.clear();
         savedFlySpeed.clear();
         savedAllowFlight.clear();
@@ -336,7 +469,7 @@ public final class MovementListener implements Listener {
             return;
         }
         if (SessionDispatch.ACTIVE
-            && SessionDispatch.testMove(player, last, current, SessionDispatch.selfMove(player)) != null) {
+            && SessionDispatch.testMove(player, last, current, SessionDispatch.selfMove(player), fromSet, toSet) != null) {
             player.teleportAsync(last);
             return;
         }
@@ -395,32 +528,53 @@ public final class MovementListener implements Listener {
         if (!entering && !leaving) {
             return false;
         }
-
-        final UUID uuid = player.getUniqueId();
-        final boolean bypass = Bypass.has(player);
-
-        if (!bypass && entering && !toSet.testState(Flags.ENTRY, uuid) && !isMember(toSet, uuid)) {
+        if (crossingDenied(player, world, fromSet, toSet, entering, leaving)) {
             dismountIfRiding(player);
+            return true;
+        }
+        runCrossing(player, fromSet, toSet, entering, leaving);
+        return false;
+    }
+
+    /**
+     * The refusal half of {@link #processCrossing}: entry, exit, level and occupancy, sending the
+     * player the matching message. A teleport passes {@code leaving} as false, because leaving by
+     * teleport is governed by {@code exit-via-teleport} in {@link PlayerStateListener}.
+     */
+    private boolean crossingDenied(
+        final Player player, final World world, final ApplicableRegionSet fromSet,
+        final ApplicableRegionSet toSet, final boolean entering, final boolean leaving
+    ) {
+        if (Bypass.has(player)) {
+            return false;
+        }
+        final UUID uuid = player.getUniqueId();
+
+        if (entering && !toSet.testState(Flags.ENTRY, uuid) && !isMember(toSet, uuid)) {
             messages.sendFlag(player, toSet.queryValue(Flags.ENTRY_DENY_MESSAGE), "entry-denied");
             return true;
         }
 
-        if (!bypass && leaving && !fromSet.testState(Flags.EXIT, uuid) && !isMember(fromSet, uuid)
+        if (leaving && !fromSet.testState(Flags.EXIT, uuid) && !isMember(fromSet, uuid)
             && !Boolean.TRUE.equals(fromSet.queryValue(Flags.EXIT_OVERRIDE))) {
-            dismountIfRiding(player);
             messages.sendFlag(player, fromSet.queryValue(Flags.EXIT_DENY_MESSAGE), "exit-denied");
             return true;
         }
-        if (!bypass && entering && levelsInUse(toSet) && !isMember(toSet, uuid)
-            && levelDenied(player, toSet)) {
+        if (entering && levelsInUse(toSet) && !isMember(toSet, uuid) && levelDenied(player, toSet)) {
             messages.send(player, "entry-denied");
             return true;
         }
-        if (!bypass && entering && toSet.worldUses(Flags.PLAYER_COUNT_LIMIT)
-            && countDenied(world, player, uuid, fromSet, toSet)) {
-            return true;
-        }
+        return entering && toSet.worldUses(Flags.PLAYER_COUNT_LIMIT)
+            && countDenied(world, player, uuid, fromSet, toSet);
+    }
 
+    /**
+     * The per-region enter and leave effects of an allowed crossing.
+     */
+    private void runCrossing(
+        final Player player, final ApplicableRegionSet fromSet, final ApplicableRegionSet toSet,
+        final boolean entering, final boolean leaving
+    ) {
         if (entering) {
             for (int i = 0, n = toSet.size(); i < n; i++) {
                 final ProtectedRegion region = toSet.get(i);
@@ -437,7 +591,6 @@ public final class MovementListener implements Listener {
                 }
             }
         }
-        return false;
     }
 
     /**
@@ -530,8 +683,7 @@ public final class MovementListener implements Listener {
             && from.getBlockZ() == to.getBlockZ()) {
             return false;
         }
-        final List<Entity> passengers = vehicle.getPassengers();
-        if (passengers.isEmpty()) {
+        if (vehicle.isEmpty()) {
             if (riddenMounts.remove(vehicle.getUniqueId())) {
                 syncMountMoves();
             }
@@ -553,7 +705,7 @@ public final class MovementListener implements Listener {
         final World world = to.getWorld();
 
         List<Player> denied = null;
-        for (final Entity passenger : passengers) {
+        for (final Entity passenger : vehicle.getPassengers()) {
             if (!(passenger instanceof Player player) || Bypass.has(player)) {
                 continue;
             }
@@ -566,7 +718,7 @@ public final class MovementListener implements Listener {
                 messages.send(player, "entry-denied");
             } else if ((!limited || !countDenied(world, player, uuid, fromSet, toSet))
                 && (!sessions
-                || SessionDispatch.testMove(player, from, to, SessionDispatch.Move.RIDE) == null)) {
+                || SessionDispatch.testMove(player, from, to, SessionDispatch.Move.RIDE, fromSet, toSet) == null)) {
                 continue;
             }
             if (denied == null) {
@@ -598,8 +750,8 @@ public final class MovementListener implements Listener {
 
     /**
      * Blocks mounting a vehicle that sits in a region the player may not enter (otherwise a player
-     * could mount an animal standing inside a no-entry region and be carried in), and starts
-     * tracking the mount so {@link #onMountMove} enforces its movement.
+     * could mount an animal standing inside a no-entry region and be carried in). Tracking starts in
+     * {@link #onMounted}, once no other plugin can still cancel the mount.
      */
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onMount(final EntityMountEvent event) {
@@ -623,10 +775,17 @@ public final class MovementListener implements Listener {
             if (SessionDispatch.testMove(player, player.getLocation(), seat,
                 SessionDispatch.Move.EMBARK) != null) {
                 event.setCancelled(true);
-                return;
             }
         }
-        if (riddenMounts.add(mount.getUniqueId())) {
+    }
+
+    /**
+     * Starts tracking the mount so {@link MountMoves#onMountMove} enforces its movement.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onMounted(final EntityMountEvent event) {
+        if (event.getEntity() instanceof Player && !EventGate.disabled(event)
+            && riddenMounts.add(event.getMount().getUniqueId())) {
             syncMountMoves();
         }
     }
@@ -637,7 +796,7 @@ public final class MovementListener implements Listener {
      * untracking on the first of two riders would silently stop enforcing the crossing for the one
      * still aboard. Cancelled dismounts leave the tracking alone, since the rider stays on.
      */
-    @EventHandler(ignoreCancelled = true)
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onDismount(final EntityDismountEvent event) {
         if (!(event.getEntity() instanceof Player leaver)) {
             return;
@@ -939,6 +1098,9 @@ public final class MovementListener implements Listener {
      * Applies the region's continuous player state (game-mode, walk/fly speed, flight) while inside,
      * restoring each to the value the player had before entering once the override no longer applies.
      *
+     * <p>{@code game-mode} is the exception to continuous. It is set when the value the player is
+     * under changes and not again, and a bypassing player is treated as under none.
+     *
      * <p>Every restore branch is gated on its map being non-empty. The read side already skips the
      * work via {@code worldUses}, but the restore side ran unconditionally — six map mutations against
      * permanently empty maps on every block crossing of every player, on a server where no region sets
@@ -948,14 +1110,17 @@ public final class MovementListener implements Listener {
         final UUID uuid = player.getUniqueId();
         boolean owedChanged = false;
 
-        final GameMode mode = toSet.worldUses(Flags.GAME_MODE)
+        final GameMode mode = toSet.worldUses(Flags.GAME_MODE) && !Bypass.has(player)
             ? parseGameMode(toSet.queryValue(Flags.GAME_MODE)) : null;
         if (mode != null) {
-            if (player.getGameMode() != mode) {
-                owedChanged |= savedGameModes.putIfAbsent(uuid, player.getGameMode()) == null;
-                player.setGameMode(mode);
+            if (appliedGameModes.get(uuid) != mode) {
+                appliedGameModes.put(uuid, mode);
+                if (player.getGameMode() != mode) {
+                    owedChanged |= savedGameModes.putIfAbsent(uuid, player.getGameMode()) == null;
+                    player.setGameMode(mode);
+                }
             }
-        } else if (!savedGameModes.isEmpty()) {
+        } else if (!appliedGameModes.isEmpty() && appliedGameModes.remove(uuid) != null) {
             final GameMode saved = savedGameModes.remove(uuid);
             if (saved != null) {
                 owedChanged = true;
@@ -1172,8 +1337,10 @@ public final class MovementListener implements Listener {
         chatTags.clear(uuid);
         hidden.remove(uuid);
         lastPosition.remove(uuid);
+        settling.remove(uuid);
         Bypass.clear(uuid);
 
+        appliedGameModes.remove(uuid);
         final GameMode mode = savedGameModes.remove(uuid);
         if (mode != null) {
             player.setGameMode(mode);
@@ -1204,12 +1371,16 @@ public final class MovementListener implements Listener {
         if (value == null) {
             return null;
         }
-        try {
-            return GameMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
-        } catch (final IllegalArgumentException e) {
-            return null;
+        final String name = value.trim();
+        for (final GameMode mode : GAME_MODES) {
+            if (mode.name().equalsIgnoreCase(name)) {
+                return mode;
+            }
         }
+        return null;
     }
+
+    private static final GameMode[] GAME_MODES = GameMode.values();
 
     /**
      * Whether {@code region} is in {@code set}, by identity. Both sets in a crossing come from the

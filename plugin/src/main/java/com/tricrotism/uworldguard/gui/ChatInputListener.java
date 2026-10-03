@@ -10,12 +10,11 @@ import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.Plugin;
 import org.jspecify.annotations.NullMarked;
 
-import java.util.function.Consumer;
-
 /**
  * Captures the next chat message from a player the GUI is awaiting input from. Chat fires async, so
  * the callback (which touches Bukkit state and reopens a menu) is dispatched to the player's entity
- * scheduler. Typing {@code cancel} aborts without invoking the callback.
+ * scheduler. Typing {@code cancel} runs the prompt's cancel action instead, which puts the player back
+ * in the menu they came from.
  */
 @NullMarked
 public final class ChatInputListener implements Listener {
@@ -31,14 +30,16 @@ public final class ChatInputListener implements Listener {
     @EventHandler(priority = EventPriority.LOWEST)
     public void onChat(final AsyncChatEvent event) {
         final Player player = event.getPlayer();
-        final Consumer<String> callback = service.take(player.getUniqueId());
-        if (callback == null) return;
+        final ChatInputService.Prompt prompt = service.take(player.getUniqueId());
+        if (prompt == null) return;
 
         event.setCancelled(true);
         final String message = PlainTextComponentSerializer.plainText().serialize(event.message());
         player.getScheduler().run(plugin, _ -> {
-            if (!message.equalsIgnoreCase("cancel")) {
-                callback.accept(message);
+            if (message.trim().equalsIgnoreCase("cancel")) {
+                prompt.onCancel().run();
+            } else {
+                prompt.onValue().accept(message);
             }
         }, null);
     }

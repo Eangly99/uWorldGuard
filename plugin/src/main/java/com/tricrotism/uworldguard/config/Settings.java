@@ -32,6 +32,7 @@ public final class Settings {
     private String storageType = "yaml";
     private Material wandItem = Material.WOODEN_AXE;
     private int autoSaveMinutes = 5;
+    private int unloadSaveWaitSeconds = 10;
 
     private MovementMode movementMode = MovementMode.EVENT;
     private int movementTaskTicks = 4;
@@ -48,6 +49,7 @@ public final class Settings {
     public void load(final FileConfiguration config) {
         storageType = config.getString("storage.type", storageType);
         autoSaveMinutes = config.getInt("storage.auto-save-minutes", autoSaveMinutes);
+        unloadSaveWaitSeconds = Math.max(0, config.getInt("storage.unload-save-wait-seconds", unloadSaveWaitSeconds));
 
         final String mode = config.getString("movement.mode", movementMode.name());
         try {
@@ -93,6 +95,14 @@ public final class Settings {
         return sqlEnabled && "sql".equalsIgnoreCase(storageType);
     }
 
+    /**
+     * Whether {@code storage.type} and {@code storage.sql.enabled} disagree. SQL is only used when
+     * both select it, so a half-switched config silently stays on YAML.
+     */
+    public boolean storageSettingsDisagree() {
+        return sqlEnabled != "sql".equalsIgnoreCase(storageType);
+    }
+
     public String storageType() {
         return storageType;
     }
@@ -103,6 +113,10 @@ public final class Settings {
 
     public int autoSaveMinutes() {
         return autoSaveMinutes;
+    }
+
+    public int unloadSaveWaitSeconds() {
+        return unloadSaveWaitSeconds;
     }
 
     public MovementMode movementMode() {

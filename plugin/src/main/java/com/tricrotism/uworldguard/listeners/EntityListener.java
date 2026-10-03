@@ -11,7 +11,9 @@ import com.tricrotism.uworldguard.region.ApplicableRegionSet;
 import com.tricrotism.uworldguard.region.RegionContainerImpl;
 import com.tricrotism.uworldguard.region.RegionQuery;
 import org.bukkit.World;
+import org.bukkit.block.Block;
 import org.bukkit.entity.*;
+import org.bukkit.event.Event;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -19,15 +21,20 @@ import org.bukkit.event.entity.*;
 import org.bukkit.event.hanging.HangingBreakByEntityEvent;
 import org.bukkit.event.raid.RaidTriggerEvent;
 import org.bukkit.event.weather.LightningStrikeEvent;
+import org.bukkit.potion.PotionEffect;
+import org.bukkit.potion.PotionEffectType;
+import org.bukkit.potion.PotionType;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 
+import java.util.Collection;
 import java.util.List;
 
 /**
  * Enforces mob-spawning and deny-spawn, the explosion flags, mob grief (enderman, ravager, wither,
  * ender dragon), mob-damage, damage-animals, firework-damage, lightning, potion-splash,
- * item-frame/painting/armor-stand destruction, and mob-drops / exp-drops.
+ * item-frame/painting/armor-stand destruction, and mob-drops / exp-drops. Also pvp for thrown and
+ * lingering potions, and block-break for blocks a projectile shatters.
  */
 @NullMarked
 public final class EntityListener implements Listener {
@@ -94,17 +101,42 @@ public final class EntityListener implements Listener {
     /**
      * Mobs that rearrange blocks by touching them rather than by exploding: endermen lifting blocks,
      * ravagers trampling leaves and crops, the wither and the dragon carving through terrain.
+     *
+     * <p>Projectiles land here too: an arrow or trident shattering a decorated pot, pointed dripstone
+     * or a chorus flower. A player's shot is a block break by that player, membership included. Any
+     * other shooter only meets an explicit {@code block-break} deny.
      */
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onMobGrief(final EntityChangeBlockEvent event) {
         if (EventGate.disabled(event)) {
             return;
         }
-        final StateFlag flag = griefFlag(event.getEntity());
-        if (flag == null || !query.usesFlag(event.getBlock().getWorld(), flag)) {
+        final Entity entity = event.getEntity();
+        final StateFlag flag = griefFlag(entity);
+        if (flag == null) {
+            if (entity instanceof Projectile projectile) {
+                onProjectileChange(event, projectile);
+            }
+            return;
+        }
+        if (!query.usesFlag(event.getBlock().getWorld(), flag)) {
             return;
         }
         if (!query.testState(event.getBlock(), flag)) {
+            event.setCancelled(true);
+        }
+    }
+
+    private void onProjectileChange(final EntityChangeBlockEvent event, final Projectile projectile) {
+        final Block block = event.getBlock();
+        if (projectile.getShooter() instanceof Player shooter) {
+            if (!query.getApplicableRegions(block).testBuild(shooter.getUniqueId(), Flags.BLOCK_BREAK)
+                && !Bypass.has(shooter)) {
+                event.setCancelled(true);
+            }
+            return;
+        }
+        if (query.usesFlag(block.getWorld(), Flags.BLOCK_BREAK) && !query.testState(block, Flags.BLOCK_BREAK)) {
             event.setCancelled(true);
         }
     }
@@ -132,21 +164,75 @@ public final class EntityListener implements Listener {
      * <p>The affected entities are copied because {@code setIntensity} writes back into the live
      * collection being walked, so the registry check comes first: with the flag unused nowhere on the
      * server, the handler costs a bitset test per world and copies nothing.
+     *
+     * <p>A harmful potion thrown by a player is also {@code pvp}: poison or slowness reaching another
+     * player where pvp is denied to the thrower has its intensity zeroed for that player. Beneficial
+     * potions still reach allies.
      */
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onPotionSplash(final PotionSplashEvent event) {
         if (EventGate.disabled(event)) {
             return;
         }
-        if (!container.anyRegionUses(Flags.POTION_SPLASH)) {
+        final boolean splashFlag = container.anyRegionUses(Flags.POTION_SPLASH);
+        final ThrownPotion potion = event.getPotion();
+        final Player thrower = container.anyRegionUses(Flags.PVP)
+            && potion.getShooter() instanceof Player player && harmful(potion.getEffects()) ? player : null;
+        if (!splashFlag && thrower == null) {
             return;
         }
 
         for (final LivingEntity affected : List.copyOf(event.getAffectedEntities())) {
-            if (!query.testState(affected, Flags.POTION_SPLASH)) {
+            if (splashFlag && !query.testState(affected, Flags.POTION_SPLASH)) {
+                event.setIntensity(affected, 0.0);
+            } else if (thrower != null && affected instanceof Player defender
+                && pvpDenied(thrower, defender, event)) {
                 event.setIntensity(affected, 0.0);
             }
         }
+    }
+
+    /**
+     * Lingering clouds re-apply every few ticks, long after the splash event, so {@code pvp} is
+     * checked again here. Victims are dropped from the affected list, which also covers instant
+     * damage since the cloud only applies effects to what is left in it.
+     */
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onCloudApply(final AreaEffectCloudApplyEvent event) {
+        if (EventGate.disabled(event) || !container.anyRegionUses(Flags.PVP)) {
+            return;
+        }
+        final AreaEffectCloud cloud = event.getEntity();
+        if (!(cloud.getSource() instanceof Player attacker) || !harmful(cloud)) {
+            return;
+        }
+        event.getAffectedEntities().removeIf(affected ->
+            affected instanceof Player defender && pvpDenied(attacker, defender, event));
+    }
+
+    /**
+     * The {@code pvp} test shared by every indirect attack. Hitting yourself is never pvp.
+     */
+    private boolean pvpDenied(final Player attacker, final Player defender, final Event cause) {
+        return !attacker.equals(defender)
+            && !query.getApplicableRegions(defender).testState(Flags.PVP, attacker.getUniqueId())
+            && !Bypass.has(attacker)
+            && !Events.fireAndTestCancel(new DisallowedPVPEvent(attacker, defender, cause));
+    }
+
+    private static boolean harmful(final AreaEffectCloud cloud) {
+        final PotionType base = cloud.getBasePotionType();
+        return (base != null && harmful(base.getPotionEffects()))
+            || (cloud.hasCustomEffects() && harmful(cloud.getCustomEffects()));
+    }
+
+    private static boolean harmful(final Collection<PotionEffect> effects) {
+        for (final PotionEffect effect : effects) {
+            if (effect.getType().getEffectCategory() == PotionEffectType.Category.HARMFUL) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
@@ -168,6 +254,14 @@ public final class EntityListener implements Listener {
         }
         final Entity victim = event.getEntity();
         final Entity damager = event.getDamager();
+
+        // lingering harming damage names the cloud, not a projectile, so the pvp listener misses it
+        if (damager instanceof AreaEffectCloud cloud && victim instanceof Player defender
+            && cloud.getSource() instanceof Player attacker && container.anyRegionUses(Flags.PVP)
+            && pvpDenied(attacker, defender, event)) {
+            event.setCancelled(true);
+            return;
+        }
 
         if (victim instanceof Player && damager instanceof Mob
             && query.usesFlag(victim.getWorld(), Flags.MOB_DAMAGE)
@@ -228,7 +322,9 @@ public final class EntityListener implements Listener {
         if (EventGate.disabled(event)) {
             return;
         }
-        if (!query.testState(event.getEntity(), Flags.ENTITY_TRANSFORM)) {
+        final Entity entity = event.getEntity();
+        if (query.usesFlag(entity.getWorld(), Flags.ENTITY_TRANSFORM)
+            && !query.testState(entity, Flags.ENTITY_TRANSFORM)) {
             event.setCancelled(true);
         }
     }
@@ -244,7 +340,9 @@ public final class EntityListener implements Listener {
         if (EventGate.disabled(event)) {
             return;
         }
-        if (!query.testState(event.getEntity(), Flags.ENTITY_TRANSFORM)) {
+        final Entity entity = event.getEntity();
+        if (query.usesFlag(entity.getWorld(), Flags.ENTITY_TRANSFORM)
+            && !query.testState(entity, Flags.ENTITY_TRANSFORM)) {
             event.setCancelled(true);
         }
     }
@@ -291,7 +389,8 @@ public final class EntityListener implements Listener {
         if (EventGate.disabled(event)) {
             return;
         }
-        if (!query.testState(event.getBlock(), Flags.DOOR_BREAK)) {
+        final Block block = event.getBlock();
+        if (query.usesFlag(block.getWorld(), Flags.DOOR_BREAK) && !query.testState(block, Flags.DOOR_BREAK)) {
             event.setCancelled(true);
         }
     }
@@ -304,7 +403,8 @@ public final class EntityListener implements Listener {
         if (EventGate.disabled(event)) {
             return;
         }
-        if (!query.testState(event.getPlayer(), Flags.RAID)) {
+        final Player player = event.getPlayer();
+        if (query.usesFlag(player.getWorld(), Flags.RAID) && !query.testState(player, Flags.RAID)) {
             event.setCancelled(true);
         }
     }

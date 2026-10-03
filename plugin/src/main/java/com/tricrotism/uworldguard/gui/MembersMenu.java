@@ -24,9 +24,10 @@ import xyz.xenondevs.invui.window.Window;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 /**
- * InvUI owner/member editor for a region. Owners and members are listed as heads; clicking one
+ * InvUI owner/member editor for a region. Owners and members are listed as heads; clicking one twice
  * removes it. The two add buttons prompt for a name in chat. Domain edits are thread-safe.
  */
 @NullMarked
@@ -38,16 +39,21 @@ public final class MembersMenu {
     private final ProtectedRegion region;
     private final String regionId;
     private final ChatInputService chatInput;
+    private final Consumer<Player> back;
     private @Nullable PagedGui<Item> gui;
 
+    /**
+     * @param back reopens the region page this menu was reached from
+     */
     public MembersMenu(final Plugin plugin, final World world, final RegionManager manager,
-                       final ProtectedRegion region, final ChatInputService chatInput) {
+                       final ProtectedRegion region, final ChatInputService chatInput, final Consumer<Player> back) {
         this.plugin = plugin;
         this.world = world;
         this.manager = manager;
         this.region = region;
         this.regionId = region.getId();
         this.chatInput = chatInput;
+        this.back = back;
     }
 
     public void open(final Player player) {
@@ -58,10 +64,11 @@ public final class MembersMenu {
                 "x x x x x x x x x",
                 "x x x x x x x x x",
                 "x x x x x x x x x",
-                "< O M C . . . . >")
+                "< B . O . M . C >")
             .addIngredient('x', Markers.CONTENT_LIST_SLOT_HORIZONTAL)
             .addIngredient('<', new PageButtons.Previous())
             .addIngredient('>', new PageButtons.Next())
+            .addIngredient('B', MenuItems.back("region", back))
             .addIngredient('O', addItem(true))
             .addIngredient('M', addItem(false))
             .addIngredient('C', MenuItems.close())
@@ -90,14 +97,14 @@ public final class MembersMenu {
     }
 
     private Item entry(final UUID uuid, final boolean owner) {
-        return Item.builder()
-            .setItemProvider(new ItemBuilder(Material.PLAYER_HEAD)
-                .setName(Messages.format("<!i><yellow><name>", Placeholder.unparsed("name", nameOf(uuid))))
-                .addLoreLines(
-                    Messages.format(owner ? "<!i><gray>Owner" : "<!i><gray>Member"),
-                    Messages.format("<!i><dark_gray>Click to remove")))
-            .addClickHandler((_, click) -> {
-                final Player clicker = click.player();
+        return MenuItems.confirm(Material.PLAYER_HEAD,
+            Messages.format("<!i><yellow><name>", Placeholder.unparsed("name", nameOf(uuid))),
+            List.of(
+                Messages.format(owner
+                    ? "<!i><gray>Owner <dark_gray>(can build and manage the region)"
+                    : "<!i><gray>Member <dark_gray>(can build in the region)"),
+                Messages.format("<!i><dark_gray>Click twice to remove")),
+            clicker -> {
                 if (MenuItems.denied(clicker, MenuItems.MEMBERS)) {
                     return;
                 }
@@ -111,15 +118,18 @@ public final class MembersMenu {
                 if (gui != null) {
                     gui.setContent(entries());
                 }
-            })
-            .build();
+            });
     }
 
     private Item addItem(final boolean owner) {
         return Item.builder()
             .setItemProvider(new ItemBuilder(owner ? Material.GOLDEN_HELMET : Material.LEATHER_HELMET)
                 .setName(Messages.format(owner ? "<!i><green>Add owner" : "<!i><green>Add member"))
-                .addLoreLines(Messages.format("<!i><dark_gray>Click, then type a player name")))
+                .addLoreLines(
+                    Messages.format(owner
+                        ? "<!i><gray>Owners can build and manage the region"
+                        : "<!i><gray>Members can build in the region"),
+                    Messages.format("<!i><dark_gray>Click, then type a player name")))
             .addClickHandler((item, click) -> promptAdd(click.player(), owner))
             .build();
     }
@@ -132,9 +142,10 @@ public final class MembersMenu {
         if (MenuItems.denied(player, MenuItems.MEMBERS)) {
             return;
         }
-        player.closeInventory();
-        player.sendMessage(Messages.format("<gray>Type the player name to add, or <red>cancel</red>."));
-        chatInput.await(player.getUniqueId(), name ->
+        MenuItems.prompt(player, chatInput,
+            Messages.format(owner ? "<gray>Type the name of the player to add as an owner."
+                : "<gray>Type the name of the player to add as a member."),
+            null, name ->
             Bukkit.getAsyncScheduler().runNow(plugin, task -> {
                 final OfflinePlayer target = Bukkit.getOfflinePlayer(name);
                 if (!target.isOnline() && !target.hasPlayedBefore()) {
@@ -158,7 +169,7 @@ public final class MembersMenu {
                     }
                 }
                 player.getScheduler().run(plugin, t -> open(player), null);
-            }));
+            }), () -> open(player));
     }
 
     /**

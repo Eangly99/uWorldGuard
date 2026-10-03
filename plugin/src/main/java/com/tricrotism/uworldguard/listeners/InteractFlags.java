@@ -38,7 +38,22 @@ import java.util.UUID;
         Material.ENDER_CHEST, Material.SMITHING_TABLE, Material.GRINDSTONE, Material.LOOM,
         Material.CARTOGRAPHY_TABLE, Material.STONECUTTER, Material.ENCHANTING_TABLE);
 
+    /**
+     * Items whose use never touches the clicked block. A denied click still lets these through,
+     * otherwise a bottle or wind charge aimed at the floor of a protected region never leaves the hand.
+     * Kept to a fixed list: anything not named here can act on the block and stays denied with it.
+     */
+    private static final Set<Material> THROWN = EnumSet.of(
+        Material.EXPERIENCE_BOTTLE, Material.WIND_CHARGE, Material.ENDER_PEARL, Material.SNOWBALL,
+        Material.EGG, Material.BLUE_EGG, Material.BROWN_EGG, Material.SPLASH_POTION,
+        Material.LINGERING_POTION, Material.TRIDENT, Material.BOW, Material.CROSSBOW,
+        Material.FISHING_ROD);
+
     private InteractFlags() {
+    }
+
+    static boolean leavesBlockAlone(final Material item) {
+        return THROWN.contains(item) || item.isEdible();
     }
 
     /**
@@ -53,10 +68,16 @@ import java.util.UUID;
             return set.queryExplicitState(Flags.RESPAWN_ANCHORS, uuid) == State.ALLOW;
         }
         if (WORKBENCHES.contains(type)) {
-            return set.queryExplicitState(Flags.PERMIT_WORKBENCHES, uuid) == State.ALLOW
-                || set.queryExplicitState(Flags.USE_ANVIL, uuid) == State.ALLOW;
+            if (set.queryExplicitState(Flags.PERMIT_WORKBENCHES, uuid) == State.ALLOW
+                || set.queryExplicitState(Flags.USE_ANVIL, uuid) == State.ALLOW) {
+                return true;
+            }
+            // An ender chest holds only the opener's own items, so membership has nothing to guard.
+            return type == Material.ENDER_CHEST
+                && set.queryExplicitState(Flags.INTERACT, uuid) != State.DENY
+                && set.queryExplicitState(Flags.USE, uuid) != State.DENY;
         }
-        return block.getState(false) instanceof Container
-            && set.queryExplicitState(Flags.CHEST_ACCESS, uuid) == State.ALLOW;
+        return set.queryExplicitState(Flags.CHEST_ACCESS, uuid) == State.ALLOW
+            && block.getState(false) instanceof Container;
     }
 }

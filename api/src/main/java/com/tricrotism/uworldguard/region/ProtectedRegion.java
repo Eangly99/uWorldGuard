@@ -161,6 +161,11 @@ public abstract class ProtectedRegion {
     private static final Object PARENT_LOCK = new Object();
 
     /**
+     * How many regions name this one as their parent. Written under {@link #PARENT_LOCK}.
+     */
+    private volatile int children;
+
+    /**
      * Set the parent for flag inheritance.
      *
      * @throws IllegalArgumentException if it would create a circular relationship
@@ -179,8 +184,23 @@ public abstract class ProtectedRegion {
                     }
                 }
             }
+            final ProtectedRegion previous = this.parent;
+            if (previous != null) {
+                previous.children--;
+            }
+            if (parent != null) {
+                parent.children++;
+            }
             this.parent = parent;
         }
+    }
+
+    /**
+     * Internal: whether any region names this one as its parent. Lets a removal skip the walk over
+     * every region in the world that unparents children, which for a childless region finds nothing.
+     */
+    public final boolean uwgHasChildren() {
+        return children > 0;
     }
 
     public final DefaultDomain getOwners() {
@@ -290,6 +310,14 @@ public abstract class ProtectedRegion {
      */
     final void uwgOwnedBy(final @Nullable RegionManager manager) {
         this.owner = manager;
+    }
+
+    /**
+     * Internal: the manager currently holding this region, or {@code null} once it has been removed
+     * or replaced, or before it is added. Plugins should not call this.
+     */
+    public final @Nullable RegionManager uwgOwner() {
+        return owner;
     }
 
     /**

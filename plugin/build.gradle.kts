@@ -73,6 +73,9 @@ dependencies {
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.mockbukkit)
     testImplementation("io.papermc.paper:paper-api:${libs.versions.paper.api.get()}")
+    // Cloud is downloaded by the plugin loader on a server, so the command tests bring their own.
+    testImplementation(libs.cloud.paper)
+    testImplementation(libs.cloud.annotations)
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 

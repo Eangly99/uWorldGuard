@@ -4,7 +4,9 @@ import org.bukkit.entity.Player;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 
+import java.util.Collection;
 import java.util.List;
+import java.util.StringJoiner;
 
 /**
  * A typed region flag. {@code T} is the runtime value type stored on a region.
@@ -102,6 +104,22 @@ public abstract class Flag<T> {
      * Convert a value into a storage-friendly object (String, Number, Boolean, List).
      */
     public abstract Object marshal(T value);
+
+    /**
+     * {@code value} written the way {@link #parse} reads it, for pre-filling an edit so the operator
+     * changes the value instead of retyping it. Lists come out comma-separated.
+     */
+    public String toInput(final T value) {
+        final Object marshalled = marshal(value);
+        if (!(marshalled instanceof Collection<?> entries)) {
+            return String.valueOf(marshalled);
+        }
+        final StringJoiner joined = new StringJoiner(",");
+        for (final Object entry : entries) {
+            joined.add(String.valueOf(entry));
+        }
+        return joined.toString();
+    }
 
     @Override
     public final boolean equals(final Object o) {

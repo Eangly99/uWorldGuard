@@ -240,6 +240,35 @@ public final class RegionEditorImpl implements RegionEditor {
     }
 
     /**
+     * Trusts or untrusts everyone holding the permission group {@code group}, the {@code g:} form of
+     * the member commands. Vetoable through {@link RegionMembershipChangeEvent} like a player edit.
+     */
+    public EditResult setGroupTrusted(
+        final ProtectedRegion region, final RegionMembershipChangeEvent.Role role, final String group,
+        final boolean add, final @Nullable CommandSender actor
+    ) {
+        if (!owns(region)) {
+            return EditResult.NOT_FOUND;
+        }
+        final DefaultDomain domain = role == RegionMembershipChangeEvent.Role.OWNER
+            ? region.getOwners()
+            : region.getMembers();
+        if (domain.containsGroup(group) == add) {
+            return EditResult.UNCHANGED;
+        }
+        if (RegionEdits.vetoed(new RegionMembershipChangeEvent(world, region, role, group, add, actor))) {
+            return EditResult.CANCELLED;
+        }
+        if (add) {
+            domain.addGroup(group);
+        } else {
+            domain.removeGroup(group);
+        }
+        manager.markDirty();
+        return EditResult.APPLIED;
+    }
+
+    /**
      * Whether {@code region} is the live region under its id in this world, and not a stale copy or
      * one from another world that happens to share the id.
      */

@@ -39,6 +39,7 @@ public final class MessageService {
     private static final String DENY_PREFIX = DENY_KEY + "-";
     private static final Function<UUID, Map<String, AtomicLong>> NEW_MAP = k -> new ConcurrentHashMap<>();
     private static final Function<Flag<?>, String> DENY_KEY_FOR = flag -> DENY_PREFIX + flag.getName();
+    private static final TagResolver[] NO_RESOLVERS = new TagResolver[0];
 
     private final Plugin plugin;
     private final File file;
@@ -189,6 +190,14 @@ public final class MessageService {
     }
 
     /**
+     * Same, without resolvers. Denials repeat per move or click while on cooldown, so the no-resolver
+     * calls skip the empty varargs array.
+     */
+    public void send(final Player player, final String key) {
+        dispatch(player, key, templates.get(key), NO_RESOLVERS);
+    }
+
+    /**
      * Render a keyed message once for broadcasting to several players, or {@code null} when the entry
      * is disabled. Unlike {@link #send} there is no recipient and no cooldown: the same line goes to
      * everyone who should see it, so it is built once rather than per receiver, and a throttle keyed
@@ -222,17 +231,22 @@ public final class MessageService {
      * Same, but a region's own {@code deny-message} takes precedence over both levels when set.
      * {@code %what%} in it expands to what was refused, as WorldGuard does — so a migrated
      * "You can't %what% here." reads correctly rather than showing the placeholder verbatim.
+     *
+     * <p>Only a disabled per-flag entry silences the region message. A disabled shared entry just
+     * means there is no default text, so the region's own message still shows.
      */
     public void sendDeny(final Player player, final Flag<?> flag, final @Nullable String regionMessage) {
         final String cooldownKey = denyKeys.computeIfAbsent(flag, DENY_KEY_FOR);
         final String override = denyOverrides ? templates.get(cooldownKey) : null;
         final String configured = override != null ? override : templates.get(DENY_KEY);
 
-        if (regionMessage != null && !regionMessage.isBlank() && !silenced(configured)) {
-            dispatch(player, cooldownKey, regionMessage.replace("%what%", whatOf(flag)));
+        if (regionMessage != null && !regionMessage.isBlank() && !silenced(override)) {
+            if (!onCooldown(player.getUniqueId(), cooldownKey)) {
+                player.sendMessage(render(regionMessage.replace("%what%", whatOf(flag)), player, NO_RESOLVERS));
+            }
             return;
         }
-        dispatch(player, cooldownKey, configured);
+        dispatch(player, cooldownKey, configured, NO_RESOLVERS);
     }
 
     private static boolean silenced(final @Nullable String template) {
@@ -247,7 +261,7 @@ public final class MessageService {
     private static String whatOf(final Flag<?> flag) {
         return switch (flag.getName()) {
             case "build" -> "build";
-            case "block-break", "deny-block-break" -> "break that block";
+            case "block-break", "deny-block-break", "break-placed-only" -> "break that block";
             case "block-place", "deny-block-place" -> "place that block";
             case "interact", "use" -> "use that";
             case "chest-access" -> "open that";
@@ -265,8 +279,12 @@ public final class MessageService {
         dispatch(player, fallbackKey, template, resolvers);
     }
 
+    public void sendFlag(final Player player, final @Nullable String custom, final String fallbackKey) {
+        sendFlag(player, custom, fallbackKey, NO_RESOLVERS);
+    }
+
     private void dispatch(final Player player, final String cooldownKey, final @Nullable String template,
-                          final TagResolver... resolvers) {
+                          final TagResolver[] resolvers) {
         if (template == null || template.isBlank() || "false".equalsIgnoreCase(template)) {
             return;
         }
