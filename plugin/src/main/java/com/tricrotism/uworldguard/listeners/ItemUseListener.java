@@ -7,13 +7,13 @@ import com.tricrotism.uworldguard.region.ApplicableRegionSet;
 import com.tricrotism.uworldguard.region.RegionContainerImpl;
 import com.tricrotism.uworldguard.region.RegionQuery;
 import com.tricrotism.uworldguard.text.MessageService;
-import io.papermc.paper.event.entity.EntityPushedByEntityAttackEvent;
 import org.bukkit.Material;
 import org.bukkit.entity.*;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
+import org.bukkit.event.entity.EntityKnockbackByEntityEvent;
 import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.entity.EntityResurrectEvent;
 import org.bukkit.event.entity.ProjectileLaunchEvent;
@@ -144,17 +144,17 @@ public final class ItemUseListener implements Listener {
     }
 
     /**
-     * Wind-charge knockback. Listens on Paper's current event rather than Bukkit's
-     * {@code EntityKnockbackByEntityEvent}, which is deprecated for removal — and which Paper warns
-     * about at startup because handling it costs performance. Only the base event declares a handler
-     * list, so registering against this parent still receives every push subclass.
+     * Wind-charge knockback. Paper's attack event attributes explosions to the shooter, so its
+     * {@code getPushedBy()} is the player rather than the projectile. The Bukkit source event keeps
+     * the wind charge itself, which is why this deprecated event is still needed here.
      */
+    @SuppressWarnings("removal")
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
-    public void onWindChargeKnockback(final EntityPushedByEntityAttackEvent event) {
+    public void onWindChargeKnockback(final EntityKnockbackByEntityEvent event) {
         if (EventGate.disabled(event)) {
             return;
         }
-        if (!(event.getPushedBy() instanceof AbstractWindCharge windCharge)) {
+        if (!(event.getSourceEntity() instanceof AbstractWindCharge windCharge)) {
             return;
         }
         final Entity victim = event.getEntity();
