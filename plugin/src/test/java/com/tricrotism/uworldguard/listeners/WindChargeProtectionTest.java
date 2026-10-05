@@ -12,10 +12,15 @@ import com.tricrotism.uworldguard.storage.RegionStore;
 import com.tricrotism.uworldguard.text.MessageService;
 import com.tricrotism.uworldguard.util.BlockVector3;
 import org.bukkit.Location;
+import org.bukkit.Material;
+import org.bukkit.block.Block;
+import org.bukkit.block.BlockFace;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Entity;
 import org.bukkit.event.entity.EntityKnockbackByEntityEvent;
 import org.bukkit.event.entity.EntityKnockbackEvent;
+import org.bukkit.event.entity.EntityChangeBlockEvent;
+import org.bukkit.event.entity.ProjectileHitEvent;
 import org.bukkit.plugin.PluginDescriptionFile;
 import org.bukkit.util.Vector;
 import org.junit.jupiter.api.AfterEach;
@@ -72,6 +77,7 @@ class WindChargeProtectionTest {
         global = new GlobalProtectedRegion();
         global.setFlag(Flags.PVP, State.DENY);
         global.setFlag(Flags.WIND_CHARGE, State.DENY);
+        global.setFlag(Flags.OTHER_EXPLOSION, State.DENY);
         manager.addRegion(global);
         thrower = server.addPlayer();
         victim = server.addPlayer();
@@ -80,6 +86,7 @@ class WindChargeProtectionTest {
         EventGate.load(new YamlConfiguration(), server.getLogger());
         server.getPluginManager().registerEvents(
             new ItemUseListener(container, container.createQuery(), new MessageService(plugin)), plugin);
+        server.getPluginManager().registerEvents(new EntityListener(container, container.createQuery()), plugin);
     }
 
     @AfterEach
@@ -149,5 +156,66 @@ class WindChargeProtectionTest {
     void windChargeDenialDoesNotCancelUnrelatedKnockback() {
         assertTrue(pushed(victim, thrower, EntityKnockbackEvent.KnockbackCause.ENTITY_ATTACK));
         assertTrue(pushed(victim, thrower, EntityKnockbackEvent.KnockbackCause.EXPLOSION));
+    }
+
+    private boolean blockHit(final Block block) {
+        final ProjectileHitEvent event = new ProjectileHitEvent(windCharge(), null, block, BlockFace.NORTH);
+        server.getPluginManager().callEvent(event);
+        return !event.isCancelled();
+    }
+
+    private boolean blockChange(final Block block) {
+        final EntityChangeBlockEvent event = new EntityChangeBlockEvent(windCharge(), block,
+            Material.AIR.createBlockData());
+        server.getPluginManager().callEvent(event);
+        return !event.isCancelled();
+    }
+
+    @Test
+    void deniedWindChargeBlockEffectsCoverDirectHitsAndBlockChanges() {
+        final Block block = world.getBlockAt(16, 64, 16);
+        for (final Material type : new Material[] {
+            Material.POINTED_DRIPSTONE, Material.CHORUS_FLOWER, Material.DECORATED_POT
+        }) {
+            block.setType(type);
+            assertFalse(blockHit(block), type.name());
+            assertFalse(blockChange(block), type.name());
+        }
+        // Cancelling a block callback must not introduce a ban on the thrower's knockback.
+        assertTrue(pushed(thrower, windCharge(), EntityKnockbackEvent.KnockbackCause.EXPLOSION));
+    }
+
+    @Test
+    void allowedWindChargeBlockEffectsRemainAvailable() {
+        global.setFlag(Flags.OTHER_EXPLOSION, State.ALLOW);
+        final Block block = world.getBlockAt(16, 64, 16);
+        block.setType(Material.POINTED_DRIPSTONE);
+        assertTrue(blockHit(block));
+        assertTrue(blockChange(block));
+    }
+
+    @Test
+    void windChargeBlockEffectsCheckTheHitBlockRatherThanTheShooter() {
+        global.setFlag(Flags.OTHER_EXPLOSION, State.ALLOW);
+        final ProtectedCuboidRegion spawn = new ProtectedCuboidRegion("spawn",
+            BlockVector3.at(8, 0, 8), BlockVector3.at(32, 255, 32));
+        spawn.setFlag(Flags.OTHER_EXPLOSION, State.DENY);
+        manager.addRegion(spawn);
+        final Block block = world.getBlockAt(16, 64, 16);
+        block.setType(Material.POINTED_DRIPSTONE);
+        assertFalse(blockHit(block));
+        assertFalse(blockChange(block));
+        assertTrue(blockHit(world.getBlockAt(500, 64, 500)));
+    }
+
+    @Test
+    void windChargeBlockEffectsHonorTheirEventGates() {
+        final YamlConfiguration config = new YamlConfiguration();
+        config.set("worlds.world.events.disabled",
+            java.util.List.of("ProjectileHitEvent", "EntityChangeBlockEvent"));
+        EventGate.load(config, server.getLogger());
+        final Block block = world.getBlockAt(16, 64, 16);
+        assertTrue(blockHit(block));
+        assertTrue(blockChange(block));
     }
 }
