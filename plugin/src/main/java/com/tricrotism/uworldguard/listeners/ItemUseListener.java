@@ -49,7 +49,8 @@ public final class ItemUseListener implements Listener {
         this.messages = messages;
     }
 
-    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    // Block use and item use are independent; a denied block must not skip the held-item ban.
+    @EventHandler(priority = EventPriority.HIGH)
     public void onUse(final PlayerInteractEvent event) {
         if (EventGate.disabled(event)) {
             return;

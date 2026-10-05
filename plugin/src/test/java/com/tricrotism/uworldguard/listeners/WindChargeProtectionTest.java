@@ -15,12 +15,17 @@ import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
+import org.bukkit.event.Event;
+import org.bukkit.event.block.Action;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Entity;
 import org.bukkit.event.entity.EntityKnockbackByEntityEvent;
 import org.bukkit.event.entity.EntityKnockbackEvent;
 import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.event.entity.ProjectileHitEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.inventory.EquipmentSlot;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.PluginDescriptionFile;
 import org.bukkit.util.Vector;
 import org.junit.jupiter.api.AfterEach;
@@ -84,6 +89,8 @@ class WindChargeProtectionTest {
         thrower.teleport(new Location(world, 0, 64, 0));
         victim.teleport(new Location(world, 16, 64, 16));
         EventGate.load(new YamlConfiguration(), server.getLogger());
+        server.getPluginManager().registerEvents(
+            new BuildProtectionListener(container.createQuery(), new MessageService(plugin)), plugin);
         server.getPluginManager().registerEvents(
             new ItemUseListener(container, container.createQuery(), new MessageService(plugin)), plugin);
         server.getPluginManager().registerEvents(new EntityListener(container, container.createQuery()), plugin);
@@ -217,5 +224,58 @@ class WindChargeProtectionTest {
         final Block block = world.getBlockAt(16, 64, 16);
         assertTrue(blockHit(block));
         assertTrue(blockChange(block));
+    }
+
+    private PlayerInteractEvent rightClick(final Material held, final EquipmentSlot hand) {
+        final Block block = world.getBlockAt(16, 64, 16);
+        block.setType(Material.OAK_TRAPDOOR);
+        return new PlayerInteractEvent(thrower, Action.RIGHT_CLICK_BLOCK, new ItemStack(held), block,
+            BlockFace.UP, hand);
+    }
+
+    private void denyBlockInteraction() {
+        global.setFlag(Flags.INTERACT, State.DENY);
+        global.setFlag(Flags.USE, State.DENY);
+        global.setFlag(Flags.BUILD, State.DENY);
+    }
+
+    @Test
+    void protectedTrapdoorClicksAllowTheHeldWindChargeInEitherHand() {
+        denyBlockInteraction();
+        for (final EquipmentSlot hand : new EquipmentSlot[] { EquipmentSlot.HAND, EquipmentSlot.OFF_HAND }) {
+            final PlayerInteractEvent event = rightClick(Material.WIND_CHARGE, hand);
+            server.getPluginManager().callEvent(event);
+            assertEquals(Event.Result.DENY, event.useInteractedBlock(), hand.name());
+            assertEquals(Event.Result.ALLOW, event.useItemInHand(), hand.name());
+        }
+    }
+
+    @Test
+    void anExplicitWindChargeItemBanStillWinsOverTheBlockClickException() {
+        denyBlockInteraction();
+        global.setFlag(Flags.DISABLE_COMPLETELY, java.util.Set.of(Material.WIND_CHARGE));
+        final PlayerInteractEvent event = rightClick(Material.WIND_CHARGE, EquipmentSlot.HAND);
+        server.getPluginManager().callEvent(event);
+        assertEquals(Event.Result.DENY, event.useInteractedBlock());
+        assertEquals(Event.Result.DENY, event.useItemInHand());
+    }
+
+    @Test
+    void theWindChargeExceptionDoesNotOverrideAnExistingItemDenial() {
+        denyBlockInteraction();
+        final PlayerInteractEvent event = rightClick(Material.WIND_CHARGE, EquipmentSlot.HAND);
+        event.setUseItemInHand(Event.Result.DENY);
+        server.getPluginManager().callEvent(event);
+        assertEquals(Event.Result.DENY, event.useInteractedBlock());
+        assertEquals(Event.Result.DENY, event.useItemInHand());
+    }
+
+    @Test
+    void protectedTrapdoorClicksWithOtherItemsRemainDenied() {
+        denyBlockInteraction();
+        final PlayerInteractEvent event = rightClick(Material.STICK, EquipmentSlot.HAND);
+        server.getPluginManager().callEvent(event);
+        assertEquals(Event.Result.DENY, event.useInteractedBlock());
+        assertEquals(Event.Result.DENY, event.useItemInHand());
     }
 }
