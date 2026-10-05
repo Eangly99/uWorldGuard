@@ -11,6 +11,7 @@ import com.tricrotism.uworldguard.region.ApplicableRegionSet;
 import com.tricrotism.uworldguard.region.RegionContainerImpl;
 import com.tricrotism.uworldguard.region.RegionQuery;
 import org.bukkit.World;
+import org.bukkit.block.Block;
 import org.bukkit.entity.*;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -92,8 +93,28 @@ public final class EntityListener implements Listener {
     }
 
     /**
+     * Direct block callbacks run before the wind-charge explosion's block list is filtered.
+     * Cancelling the callback suppresses the block interaction while retaining the burst and boost.
+     */
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onWindChargeBlockHit(final ProjectileHitEvent event) {
+        if (!(event.getEntity() instanceof AbstractWindCharge)) {
+            return;
+        }
+        final Block block = event.getHitBlock();
+        if (block == null || EventGate.disabled(event)) {
+            return;
+        }
+        final StateFlag flag = explosionFlag(event.getEntity());
+        if (query.usesFlag(block.getWorld(), flag) && !query.testState(block, flag)) {
+            event.setCancelled(true);
+        }
+    }
+
+    /**
      * Mobs that rearrange blocks by touching them rather than by exploding: endermen lifting blocks,
      * ravagers trampling leaves and crops, the wither and the dragon carving through terrain.
+     * Wind-charge block changes use the same flag as their explosion effects.
      */
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onMobGrief(final EntityChangeBlockEvent event) {
@@ -433,6 +454,8 @@ public final class EntityListener implements Listener {
 
     private static @Nullable StateFlag griefFlag(final Entity entity) {
         return switch (entity) {
+            case BreezeWindCharge _ -> Flags.BREEZE_CHARGE_EXPLOSION;
+            case WindCharge _ -> Flags.OTHER_EXPLOSION;
             case Enderman _ -> Flags.ENDERMAN_GRIEF;
             case Ravager _ -> Flags.RAVAGER_GRIEF;
             case Wither _ -> Flags.WITHER_DAMAGE;

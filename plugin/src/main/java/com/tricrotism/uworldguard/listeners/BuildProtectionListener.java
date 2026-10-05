@@ -16,6 +16,7 @@ import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.data.Waterlogged;
 import org.bukkit.entity.*;
+import org.bukkit.event.Event;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -28,6 +29,7 @@ import org.bukkit.event.hanging.HangingPlaceEvent;
 import org.bukkit.event.player.PlayerBucketEmptyEvent;
 import org.bukkit.event.player.PlayerBucketEvent;
 import org.bukkit.event.player.PlayerBucketFillEvent;
+import org.bukkit.event.player.PlayerFishEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.projectiles.ProjectileSource;
@@ -267,7 +269,9 @@ public final class BuildProtectionListener implements Listener {
             return;
         }
         final Block block = event.getClickedBlock();
-        if (event.getAction() != Action.RIGHT_CLICK_BLOCK || block == null || event.getHand() != EquipmentSlot.HAND) {
+        final boolean windCharge = event.getMaterial() == Material.WIND_CHARGE;
+        if (event.getAction() != Action.RIGHT_CLICK_BLOCK || block == null
+            || (event.getHand() != EquipmentSlot.HAND && !windCharge)) {
             return;
         }
         if (InteractionWhitelist.allows(block.getWorld(), block.getType())) {
@@ -280,6 +284,14 @@ public final class BuildProtectionListener implements Listener {
                 return;
             }
             if (InteractFlags.explicitlyAllowed(set, player.getUniqueId(), block)) {
+                return;
+            }
+            if (windCharge) {
+                // Protect the clicked block without swallowing the held item's throw action.
+                event.setUseInteractedBlock(Event.Result.DENY);
+                if (event.useItemInHand() != Event.Result.DENY) {
+                    event.setUseItemInHand(Event.Result.ALLOW);
+                }
                 return;
             }
             event.setCancelled(true);
@@ -299,6 +311,29 @@ public final class BuildProtectionListener implements Listener {
         if (attacker == null) {
             return;
         }
+        if (!query.getApplicableRegions(defender)
+            .testState(Flags.PVP, attacker.getUniqueId())) {
+            if (Bypass.has(attacker)) {
+                return;
+            }
+            if (Events.fireAndTestCancel(new DisallowedPVPEvent(attacker, defender, event))) {
+                return;
+            }
+            event.setCancelled(true);
+        }
+    }
+
+    /** Cancelling CAUGHT_ENTITY stops the reel-in before the server applies the pull. */
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onFishingPull(final PlayerFishEvent event) {
+        if (event.getState() != PlayerFishEvent.State.CAUGHT_ENTITY
+            || !(event.getCaught() instanceof Player defender)) {
+            return;
+        }
+        if (EventGate.disabled(event)) {
+            return;
+        }
+        final Player attacker = event.getPlayer();
         if (!query.getApplicableRegions(defender)
             .testState(Flags.PVP, attacker.getUniqueId())) {
             if (Bypass.has(attacker)) {
